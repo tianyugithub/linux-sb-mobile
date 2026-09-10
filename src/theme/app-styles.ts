@@ -1206,9 +1206,21 @@ export function createAppStyles(C: Palette) {
   },
   nbModeGroup: { flexDirection: 'row', alignItems: 'center', flexShrink: 0, paddingRight: 4 },
   nbFull: { flex: 1, backgroundColor: C.canvas },
-  nbFullInner: { flex: 1, paddingHorizontal: 12 },
+  nbFullInner: { flex: 1 },
+  /** 工具条与表情面板自己在收边（nbBar 6 / nbEmojiTabs 12），全屏时别再往外让一层。 */
+  nbFullBars: { paddingHorizontal: 8 },
   nbFullBody: { flex: 1 },
   nbFullBodyInner: { paddingBottom: 24 },
+  /**
+   * 全屏的编辑区：去掉外框与圆角，白底铺到屏幕边缘。
+   * 编辑区本身就是整屏，再描一圈线只会像个卡片（用户点名要去掉）。
+   */
+  nbSurfaceSeamless: {
+    borderWidth: 0,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+  },
   nbBtnGlyphOn: { color: C.scheme === 'light' ? C.green : C.text },
   nbRichWeb: { backgroundColor: 'transparent' },
   nbRichLoading: { position: 'absolute', left: 0, right: 0, top: 0, alignItems: 'center', justifyContent: 'center' },

@@ -41,6 +41,8 @@ type Props = {
   html: string;
   minHeight?: number;
   maxHeight?: number;
+  /** 铺满整屏的用法（全屏编辑）：不要外框与圆角。 */
+  seamless?: boolean;
   editable?: boolean;
   compact?: boolean;
   placeholder?: string;
@@ -68,6 +70,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   html,
   minHeight = 190,
   maxHeight = 520,
+  seamless = false,
   editable = true,
   compact = false,
   placeholder,
@@ -97,6 +100,14 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   const run = useCallback((js: string) => {
     viewRef.current?.injectJavaScript(`${js};true;`);
   }, []);
+
+  /**
+   * 最小高度可能在挂载之后才变大（全屏编辑区要先量出可视高度），
+   * 而 height 只在收到内核的高度消息时才更新 —— 这里补一次，别让编辑区停留在旧的矮高度。
+   */
+  useEffect(() => {
+    setHeight((current) => Math.max(current, innerMin));
+  }, [innerMin]);
 
   useImperativeHandle(ref, () => ({
     command(name: string, payload?: Record<string, unknown>) {
@@ -219,7 +230,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   const scrollable = height >= maxHeight;
 
   return (
-    <View style={[styles.nbRichWrap, { minHeight }]}>
+    <View style={[styles.nbRichWrap, seamless && styles.nbSurfaceSeamless, { minHeight }]}>
       <WebView
         ref={viewRef}
         originWhitelist={['*']}

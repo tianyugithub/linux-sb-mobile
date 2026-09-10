@@ -5,6 +5,7 @@ import {
   Modal,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   View,
@@ -735,6 +736,8 @@ export function useNbEditor({
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
   const [sourceState, setSourceState] = useState<EditorSnapshot | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  /** 全屏时编辑区的可视高度（`nbFullBody` 的实测高度，减掉内容区下内边距）。 */
+  const [fullBodyH, setFullBodyH] = useState(0);
   const [prompt, setPrompt] = useState<null | 'link' | 'video' | 'image'>(null);
   const [promptValue, setPromptValue] = useState('');
   const [promptSecond, setPromptSecond] = useState('');
@@ -968,13 +971,26 @@ export function useNbEditor({
     </View>
   ) : null;
 
+  /**
+   * 全屏时编辑区要撑满可视高度。
+   *
+   * 编辑器高度一直是按**内容**算的（内容少就只给最小高度），所以进了全屏也只在顶上留一个小框、
+   * 下面全空着。这里量出 `nbFullBody` 的可视高度当最小高度：内容少时铺满整屏（点哪都能落光标），
+   * 内容超出时照旧由外层 ScrollView 滚 —— 分页与键盘行为都不变。
+   */
+  const fillHeight = fullscreen && fullBodyH > 0
+    ? Math.max(minHeight, fullBodyH - (StyleSheet.flatten(styles.nbFullBodyInner).paddingBottom ?? 0))
+    : undefined;
+  const surfaceMinHeight = fillHeight ?? minHeight;
+
   const surface = mode === 'wysiwyg' && wysiwyg ? (
     <RichEditor
       key={wysiwyg.token}
       ref={richRef}
       html={wysiwyg.html}
-      minHeight={minHeight}
-      maxHeight={docked ? 320 : 520}
+      minHeight={surfaceMinHeight}
+      maxHeight={fillHeight ? Number.MAX_SAFE_INTEGER : (docked ? 320 : 520)}
+      seamless={Boolean(fillHeight)}
       compact={docked}
       placeholder={placeholder}
       onChange={onRichChange}
@@ -992,7 +1008,13 @@ export function useNbEditor({
       onBlur={onBlur}
       placeholder={placeholder}
       placeholderTextColor={C.dim}
-      style={[styles.nbInput, docked && styles.nbInputSolo, inputStyle, { minHeight }]}
+      style={[
+        styles.nbInput,
+        docked && !fullscreen && styles.nbInputSolo,
+        fullscreen && styles.nbSurfaceSeamless,
+        inputStyle,
+        { minHeight: surfaceMinHeight },
+      ]}
       multiline
       textAlignVertical="top"
       scrollEnabled
@@ -1042,9 +1064,16 @@ export function useNbEditor({
           <View style={[styles.nbFull, { paddingTop: insets.top, paddingBottom: insets.bottom + 6 }]}>
             <ScreenHeader title="全屏编辑" onBack={() => setFullscreen(false)} />
             <View style={styles.nbFullInner}>
-              {toolbar}
-              {emoji}
-              <ScrollView style={styles.nbFullBody} contentContainerStyle={styles.nbFullBodyInner} keyboardShouldPersistTaps="handled">
+              <View style={styles.nbFullBars}>
+                {toolbar}
+                {emoji}
+              </View>
+              <ScrollView
+                style={styles.nbFullBody}
+                contentContainerStyle={styles.nbFullBodyInner}
+                onLayout={(event) => setFullBodyH(Math.round(event.nativeEvent.layout.height))}
+                keyboardShouldPersistTaps="handled"
+              >
                 {surface}
               </ScrollView>
             </View>
