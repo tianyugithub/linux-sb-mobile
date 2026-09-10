@@ -57,6 +57,8 @@ object H3 {
   @Volatile private var appContext: Context? = null
   @Volatile private var enabled = true
   private val engines = HashMap<String, CronetEngine>()
+  /** host → 当前钉住的地址，失败时拿去 DohDns 标记，下次换一个。 */
+  private val pinnedHosts = HashMap<String, java.net.InetAddress>()
   private val executor = Executors.newFixedThreadPool(4) { runnable ->
     Thread(runnable, "LinuxH3-io").apply { isDaemon = true }
   }
@@ -86,10 +88,15 @@ object H3 {
     ?.getString(KEY_STATUS, "")
     .orEmpty()
 
-  /** 只有直连官网（非镜像）且是 linux.sb 系域名时才用 QUIC。 */
+  /**
+   * 只在 **DoH 通道** 且是 linux.sb 系域名时才用 QUIC。
+   *
+   * 镜像通道的 SNI 是镜像域名、本来就不被封；直连通道保持原样（用户要求不做任何改动），
+   * 所以这两条路都不接管。
+   */
   fun shouldUse(url: okhttp3.HttpUrl): Boolean {
     if (!enabled) return false
-    if (LinuxAccess.usingMirror()) return false
+    if (!LinuxAccess.usingDoh()) return false
     val host = url.host.lowercase()
     return host == "linux.sb" || host.endsWith(".linux.sb")
   }
@@ -117,7 +124,11 @@ object H3 {
     }
     val body = request.body?.let { toBytes(it) }
     if (body != null) {
-      builder.setUploadDataProvider(UploadDataProviders.create(body), executor)
+      /*
+       * 用三参数版本：单参数版会自带 `Content-Type: application/x-www-form-urlencoded`，
+       * 我们再加一个真的 Content-Type 就会**重复**，服务端（如 Cap 验证、登录）可能因此拒绝。
+       */
+      builder.setUploadDataProvider(UploadDataProviders.create(body, 0, body.size), executor)
       val type = request.body?.contentType()?.toString()
       if (type != null) builder.addHeader("Content-Type", type)
     }
@@ -143,12 +154,14 @@ object H3 {
 
   private fun engineFor(ctx: Context, host: String): CronetEngine = synchronized(engines) {
     engines.getOrPut(host) {
-      val ip = try {
-        DohDns.instance.lookup(host).firstOrNull()?.hostAddress
+      val address = try {
+        DohDns.instance.lookup(host).firstOrNull()
       } catch (error: Exception) {
         Log.i(TAG, "取 $host 的真 IP 失败：${error.message}")
         null
       }
+      if (address != null) pinnedHosts[host] = address
+      val ip = address?.hostAddress
       val builder = ExperimentalCronetEngine.Builder(ctx)
         .enableHttp2(true)
         .enableQuic(true)
@@ -164,6 +177,32 @@ object H3 {
       Log.i(TAG, "engine: $host -> ${ip ?: "系统 DNS"}")
       engine
     }
+  }
+
+  /**
+   * H3 失败时调用：把这个地址标记为坏（DohDns 90 秒内不再用它），并丢掉引擎。
+   *
+   * 原来的 TCP 路径有 RetryInterceptor + RouteWatcher 做这件事，QUIC 这条路一开始没有——
+   * 钉住的那个 Cloudflare IP 一旦变慢或不可达，所有请求就会一起卡到重启为止。
+   */
+  fun markFailed(request: okhttp3.Request) {
+    val host = request.url.host.lowercase()
+    val address = synchronized(engines) {
+      engines.remove(host)?.let { engine ->
+        try {
+          engine.shutdown()
+        } catch (_: Exception) {
+          /* ignore */
+        }
+      }
+      pinnedHosts.remove(host)
+    }
+    try {
+      DohDns.instance.markFailed(host, address)
+    } catch (_: Exception) {
+      /* ignore */
+    }
+    Log.i(TAG, "H3 失败，已标记 ${address?.hostAddress ?: "当前 IP"} 并丢弃引擎：$host")
   }
 
   private fun dropEngines() = synchronized(engines) {
@@ -275,7 +314,7 @@ object H3 {
       val magic = if (bytes.size > 1) "%02x%02x".format(bytes[0], bytes[1]) else "--"
       Log.d(
         TAG,
-        "resp ${responseInfo.httpStatusCode} ${request.url.encodedPath} " +
+        "resp ${responseInfo.httpStatusCode} ${request.method} ${request.url.encodedPath} " +
           "ct=${built["Content-Type"]} ce=${built["Content-Encoding"]} " +
           "cl=${built["Content-Length"]} len=${bytes.size} head=$magic",
       )
