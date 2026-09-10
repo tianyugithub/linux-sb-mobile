@@ -1,0 +1,71 @@
+{
+  "expo": {
+    "name": "LINUX SB",
+    "slug": "linux-sb-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "androidStatusBar": {
+      "backgroundColor": "#0E1117",
+      "barStyle": "light-content",
+      "translucent": true
+    },
+    "androidNavigationBar": {
+      "backgroundColor": "#121720",
+      "barStyle": "light-content"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "sb.linux.mobile"
+    },
+    "android": {
+      "package": "sb.linux.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+        "versionCode": 126,
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.WAKE_LOCK",
+        "android.permission.VIBRATE",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#E1251B",
+          "defaultChannel": "linux-sb-messages"
+        }
+      ],
+      "expo-background-task",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "更换头像时需要访问相册，以便裁切后上传。",
+          "cameraPermission": "拍照上传头像时需要使用相机。"
+        }
+      ]
+    ],
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    }
+  }
+}

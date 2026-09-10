@@ -1,0 +1,9 @@
+name = "linux-sb-img"
+main = "src/index.js"
+compatibility_date = "2026-09-09"
+account_id = "07bf21e31115a068efc11916ae6f592f"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "liunxsb"
