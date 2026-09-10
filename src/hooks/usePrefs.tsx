@@ -18,7 +18,6 @@ type PrefsApi = AppPrefs & {
   fontFactor: number;
   codeFontsReady: boolean;
   setFontSize: (fontSize: FontSizePref) => Promise<void>;
-  setBlockPromo: (blockPromo: boolean) => Promise<void>;
   setPostingNoticeSkip: (postingNoticeSkip: boolean) => Promise<void>;
   /** 首页「每日热帖」区块的展开状态。 */
   setHotTopicsOpen: (hotTopicsOpen: boolean) => Promise<void>;
@@ -55,9 +54,6 @@ export function PrefsProvider({ children }: { children: React.ReactNode }) {
     codeFontsReady: fontsReady,
     setFontSize: async (fontSize) => {
       await patchPrefs({ fontSize });
-    },
-    setBlockPromo: async (blockPromo) => {
-      await patchPrefs({ blockPromo });
     },
     setPostingNoticeSkip: async (postingNoticeSkip) => {
       await patchPrefs({ postingNoticeSkip });

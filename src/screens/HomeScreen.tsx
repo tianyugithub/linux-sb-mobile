@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import { sorts, type Topic } from '../../data';
 import { api, mapTopic, type DailyHotTopicDto } from '../services/api';
-import { isPromoTopic, PROMO_FORUM } from '../services/prefs';
 import { useAsync } from '../hooks/useAsync';
 import { usePagedList } from '../hooks/usePagedList';
 import { usePrefs } from '../hooks/usePrefs';
@@ -66,7 +65,7 @@ export function HomeScreen({
   onJumpApplied?: () => void;
 }) {
   const nav = useNav();
-  const { blockPromo, hotTopicsOpen, setHotTopicsOpen } = usePrefs();
+  const { hotTopicsOpen, setHotTopicsOpen } = usePrefs();
   /**
    * 每日热帖（官方首页侧栏 `daily-hot-topics-card`）。
    *
@@ -83,7 +82,7 @@ export function HomeScreen({
   );
   const [sort, setSort] = useState(jumpSort?.sort && jumpSort.sort !== '足迹' ? jumpSort.sort : '新评论');
   const forumsQuery = useAsync(() => api.forums().then((result) => result.items.map((item) => item.name)), [], 'forums:names');
-  const homeTabs = ['全部', ...(forumsQuery.data ?? []).filter((name) => !blockPromo || name !== PROMO_FORUM)];
+  const homeTabs = ['全部', ...(forumsQuery.data ?? [])];
   // 「足迹」与官方一致：仅登录后展示，列出我浏览过且仍有新回复的主题。
   const sortTabs = nav.loggedIn ? sorts : sorts.filter((item) => item !== '足迹');
   const footprint = sort === '足迹';
@@ -115,11 +114,11 @@ export function HomeScreen({
         setHotTopics(result.hotTopics);
       }
       return {
-        items: result.items.map(mapTopic).filter((item) => !blockPromo || forum === PROMO_FORUM || !isPromoTopic(item)),
+        items: result.items.map(mapTopic),
         nextCursor: result.nextCursor,
       };
     }),
-    [forum, sort, blockPromo],
+    [forum, sort],
   );
   /**
    * 帖子列表屏蔽（官方 home_keyword_filter）：只在首页列表生效，
@@ -151,9 +150,6 @@ export function HomeScreen({
   useEffect(() => {
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [forum, sort]);
-  useEffect(() => {
-    if (blockPromo && forum === PROMO_FORUM) setForum('全部');
-  }, [blockPromo, forum]);
 
   return (
     <View style={styles.flex}>

@@ -10,7 +10,6 @@ export type CodeSizePref = CodeSizeId;
 
 export type AppPrefs = {
   fontSize: FontSizePref;
-  blockPromo: boolean;
   /** 发帖须知（「我已阅读并确认」）不再每次弹出。 */
   postingNoticeSkip: boolean;
   /** 首页「每日热帖」区块是否展开（默认收起，别挤掉首屏的帖子列表）。 */
@@ -40,8 +39,6 @@ export const FONT_LABEL: Record<FontSizePref, string> = {
 
 export const FONT_CYCLE: FontSizePref[] = ['small', 'standard', 'large'];
 
-export const PROMO_FORUM = '我要推广';
-
 const CODE_THEMES: CodeThemePref[] = ['auto', 'one-dark', 'github', 'dracula', 'nord', 'monokai', 'tokyo', 'solarized', 'quiet', 'paper', 'dawn'];
 const CODE_FONTS: CodeFontPref[] = ['system', 'jetbrains', 'plex', 'fira'];
 const CODE_SIZES: CodeSizePref[] = ['small', 'standard', 'large'];
@@ -52,7 +49,6 @@ function pick<T extends string>(value: unknown, allowed: T[], fallback: T): T {
 
 export const DEFAULT_PREFS: AppPrefs = {
   fontSize: 'standard',
-  blockPromo: true,
   postingNoticeSkip: false,
   hotTopicsOpen: false,
   plugins: {},
@@ -113,7 +109,6 @@ function parse(raw: string | null): AppPrefs {
     const fontSize = parsed.fontSize === 'small' || parsed.fontSize === 'large' ? parsed.fontSize : 'standard';
     return {
       fontSize,
-      blockPromo: parsed.blockPromo !== false,
       postingNoticeSkip: parsed.postingNoticeSkip === true,
       hotTopicsOpen: parsed.hotTopicsOpen === true,
       plugins: parsePlugins(parsed.plugins),
@@ -159,10 +154,6 @@ export async function patchPrefs(patch: Partial<AppPrefs>) {
 export function nextFontSize(currentSize: FontSizePref): FontSizePref {
   const index = FONT_CYCLE.indexOf(currentSize);
   return FONT_CYCLE[(index + 1) % FONT_CYCLE.length];
-}
-
-export function isPromoTopic(topic: { forum?: string | null }) {
-  return topic.forum === PROMO_FORUM;
 }
 
 export function scaleTextStyle(style: TextStyle | TextStyle[], factor: number): TextStyle {
