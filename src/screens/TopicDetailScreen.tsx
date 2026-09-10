@@ -1701,7 +1701,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
           {topicTagList(current).filter((tag) => tag.type === 'pinned').map((tag) => (
             <CompactTag key={`${tag.type}-${tag.label}`} tone={stampTone(tag.type, tag.label)}>{stampLabel(tag)}</CompactTag>
           ))}
-          <Text style={scaleTextStyle(styles.detailTitle, fontFactor)}>{current.title}</Text>
+          <Text selectable style={scaleTextStyle(styles.detailTitle, fontFactor)}>{current.title}</Text>
           <View style={styles.detailViews}>
             <Icon name="eye-outline" size={14} color={C.dim} />
             <Text style={styles.detailViewsText}>{viewCount}</Text>

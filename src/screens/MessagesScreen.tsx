@@ -55,7 +55,7 @@ export function MessageCard({ item, onPress }: { item: MessageItem; onPress: () 
             <Text style={[styles.jdMsgKindText, { color: theme.fg }]}>{theme.label}</Text>
           </View>
         </View>
-        {text ? <Text style={styles.jdMsgText}>{text}</Text> : null}
+        {text ? <Text selectable style={styles.jdMsgText}>{text}</Text> : null}
         {showTopic ? (
           <View style={styles.jdMsgFoot}>
             <Text style={styles.jdMsgLink}>{topic}</Text>

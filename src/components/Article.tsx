@@ -53,7 +53,7 @@ export function ArticleImage({
         <Pressable onPress={() => onOpen?.(src)} style={styles.articleImageFallback}>
           <Text style={styles.articleLink}>图片未显示，点击打开原图</Text>
         </Pressable>
-        {caption ? <Text style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
+        {caption ? <Text selectable style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
       </View>
     );
   }
@@ -73,7 +73,7 @@ export function ArticleImage({
           onError)}
           {badge ? <View style={styles.articleImageBadge}><Text style={styles.articleImageBadgeText}>{index + 1}/{count}</Text></View> : null}
         </Pressable>
-        {caption ? <Text style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
+        {caption ? <Text selectable style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
       </View>
     );
   }
@@ -83,7 +83,7 @@ export function ArticleImage({
         <Image source={{ uri }} style={grid ? styles.articleImageGridImage : styles.articleImage} resizeMode={grid ? 'cover' : 'contain'} onError={onError} />
         {badge ? <View style={styles.articleImageBadge}><Text style={styles.articleImageBadgeText}>{index + 1}/{count}</Text></View> : null}
       </Pressable>
-      {caption ? <Text style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
+      {caption ? <Text selectable style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
     </View>
   );
 }
@@ -123,7 +123,9 @@ export function InlineText({
     paddingHorizontal: 4,
   };
   return (
-    <Text style={style}>
+    /* selectable：长按可选中并复制（RN 的 Text 默认不可选）。正文、评论、引用、标题、
+       表格单元都从这里渲染，所以一处就够；点链接仍然照常跳转。 */
+    <Text selectable style={style}>
       {spans.map((span, index) => {
         if (span.type === 'mention') {
           return (

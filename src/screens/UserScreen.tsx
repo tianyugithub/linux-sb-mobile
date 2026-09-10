@@ -66,7 +66,7 @@ export function UserScreen({ member }: { member: Member }) {
                   </Pressable>
                 </View>
               </View>
-              {current.bio ? <Text style={styles.userBio}>{current.bio}</Text> : null}
+              {current.bio ? <Text selectable style={styles.userBio}>{current.bio}</Text> : null}
               <View style={styles.userStats}>
                 <View style={styles.userStat}>
                   <Text style={styles.userStatValue}>{current.points}</Text>
