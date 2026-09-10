@@ -23,7 +23,8 @@
     "check:hot": "node scripts/run-stubbed.mjs scripts/check-hot-topics.ts",
     "check:update": "node scripts/run-stubbed.mjs scripts/check-update.ts",
     "check:captcha": "node scripts/run-stubbed.mjs scripts/check-captcha.ts",
-    "check:helper": "npx tsx scripts/check-helper.ts"
+    "check:helper": "npx tsx scripts/check-helper.ts",
+    "check:code": "npx tsx scripts/check-code.ts"
   },
   "dependencies": {
     "@nutui/nutui-react-native": "0.0.8",

@@ -75,6 +75,8 @@ const KW: Record<CodeLang, Set<string>> = {
 const BOOLS = new Set(['true', 'false', 'null', 'undefined', 'None', 'True', 'False', 'nil', 'NaN', 'Infinity']);
 const TYPES = new Set(['string', 'number', 'boolean', 'object', 'symbol', 'bigint', 'any', 'unknown', 'never', 'void', 'int', 'float', 'double', 'char', 'bool', 'usize', 'isize', 'str', 'Self']);
 const MAX_CHARS = 16000;
+/** 一行最多保留多少个着色片段，超过就合并成纯文本（见 collapseHeavyLine）。 */
+const MAX_TOKENS_PER_LINE = 320;
 
 function push(out: HlToken[], t: string, k: CodeTokenKind) {
   if (t) out.push({ t, k });
@@ -354,7 +356,24 @@ export function tokensToLines(tokens: HlToken[]): HlToken[][] {
       if (part) lines[lines.length - 1].push({ t: part, k: tok.k });
     });
   });
-  return lines;
+  return lines.map(collapseHeavyLine);
+}
+
+/**
+ * 一行里片段过多（压缩过的代码，一行上万字符）就不再逐段着色。
+ *
+ * `MAX_CHARS` 只挡住整块的着色量，挡不住「一行被切成几千个片段」：每个片段在 RN 里都是一个
+ * 嵌套 `Text`，一行几千个嵌套 Text 会把文本引擎按住 —— 实测打开带 18K 单行代码的帖子
+ * （linux.sb/topic/21279），进程满载 120%~190% 持续 8 秒以上，用户看到的是「特别慢」甚至像闪退。
+ * 合并成一个纯文本片段后，这一行只剩一次排版。
+ */
+export function longestLineLength(lines: HlToken[][]): number {
+  return lines.reduce((max, line) => Math.max(max, line.reduce((n, tok) => n + tok.t.length, 0)), 0);
+}
+
+function collapseHeavyLine(line: HlToken[]): HlToken[] {
+  if (line.length <= MAX_TOKENS_PER_LINE) return line;
+  return [{ t: line.map((tok) => tok.t).join(''), k: 'text' }];
 }
 
 export function prepareCode(raw: string, hinted: string | undefined, prettyJson: boolean) {

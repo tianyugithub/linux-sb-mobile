@@ -10,7 +10,10 @@ import {
   type CodeTheme,
   type CodeThemeId,
 } from '../theme/code-themes';
-import { prepareCode, tokensToLines, type HlToken } from '../utils/highlight';
+import { longestLineLength, prepareCode, tokensToLines, type HlToken } from '../utils/highlight';
+
+/** 一行超过这么多字符就不再自动换行（见 CodeBlock 里的说明）。 */
+const MAX_WRAP_LINE = 1000;
 
 function LineTokens({
   tokens,
@@ -70,8 +73,16 @@ export function CodeBlock({
     [text, lang, preview, prefs.codePrettyJson],
   );
   const lines = useMemo(() => tokensToLines(prepared.tokens), [prepared.tokens]);
+  /**
+   * 最长一行的字符数。超过 `MAX_WRAP_LINE` 就不自动换行。
+   *
+   * 压缩过的代码常常一行上万字符，交给文本引擎去排断行会把 JS 线程按住好几秒
+   * （linux.sb/topic/21279 实测：进程满载 8 秒以上）。这种行改成横向滚动，
+   * 与网页端 `<pre>` 的行为一致，正常代码的换行偏好不受影响。
+   */
+  const longestLine = useMemo(() => longestLineLength(lines), [lines]);
   const showGutter = preview ? false : prefs.codeLineNumbers && !compact && lines.length > 1;
-  const wrap = preview ? true : prefs.codeWrap;
+  const wrap = preview ? true : (prefs.codeWrap && longestLine <= MAX_WRAP_LINE);
   const gutterW = Math.max(22, String(lines.length).length * fontSize * 0.62 + 10);
   const body = lines.map((tokens, index) => (
     <View key={index} style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
