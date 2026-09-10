@@ -11,6 +11,7 @@ import {
   type CodeSizePref,
   type CodeThemePref,
   type FontSizePref,
+  type AccessChannelPref,
 } from '../services/prefs';
 import { applyScheme, type ColorScheme } from '../theme/palette';
 
@@ -21,6 +22,10 @@ type PrefsApi = AppPrefs & {
   setPostingNoticeSkip: (postingNoticeSkip: boolean) => Promise<void>;
   /** 首页「每日热帖」区块的展开状态。 */
   setHotTopicsOpen: (hotTopicsOpen: boolean) => Promise<void>;
+  /** 官网访问通道：镜像（默认）/ DoH / 直连。 */
+  setAccessChannel: (accessChannel: AccessChannelPref) => Promise<void>;
+  /** DoH / 直连通道下是否先试 HTTP/3。 */
+  setH3First: (h3First: boolean) => Promise<void>;
   /** 插件开关（见 src/plugins/registry.ts）。 */
   setPluginEnabled: (id: string, enabled: boolean) => Promise<void>;
   setScheme: (scheme: ColorScheme) => Promise<void>;
@@ -60,6 +65,14 @@ export function PrefsProvider({ children }: { children: React.ReactNode }) {
     },
     setHotTopicsOpen: async (hotTopicsOpen) => {
       await patchPrefs({ hotTopicsOpen });
+    },
+    setH3First: async (h3First) => {
+      await patchPrefs({ h3First });
+    },
+    setAccessChannel: async (accessChannel: AccessChannelPref) => {
+      const { bustLiveCache } = await import('../services/live');
+      bustLiveCache();
+      await patchPrefs({ accessChannel });
     },
     setPluginEnabled: async (id, enabled) => {
       await patchPrefs({ plugins: { ...prefs.plugins, [id]: enabled } });

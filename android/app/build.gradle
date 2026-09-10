@@ -171,6 +171,10 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
     implementation("androidx.webkit:webkit:1.14.0")
+    // HTTP/3（QUIC）：国内对 linux.sb 的封锁在 TCP 的 SNI 上（TLS 一发就被重置），
+    // 同一 IP 走 UDP/443 的 QUIC 能直接 200。见 H3.kt。
+    implementation("org.chromium.net:cronet-embedded:143.7445.0")
+    testImplementation("junit:junit:4.13.2")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

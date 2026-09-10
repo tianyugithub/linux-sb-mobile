@@ -1,12 +1,15 @@
 import { Platform, StyleSheet, type TextStyle } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import { setAccessChannel as setNativeAccessChannel, setH3Enabled as setNativeH3 } from 'linux-notify';
 import type { ColorScheme } from '../theme/palette';
 import type { CodeFontId, CodeSizeId, CodeThemeId } from '../theme/code-themes';
+import { configureAccessChannel, normalizeAccessChannel, type AccessChannel } from '../utils/linux-access';
 
 export type FontSizePref = 'small' | 'standard' | 'large';
 export type CodeThemePref = CodeThemeId;
 export type CodeFontPref = CodeFontId;
 export type CodeSizePref = CodeSizeId;
+export type AccessChannelPref = AccessChannel;
 
 export type AppPrefs = {
   fontSize: FontSizePref;
@@ -16,6 +19,10 @@ export type AppPrefs = {
   hotTopicsOpen: boolean;
   /** 插件开关（默认关闭，见 src/plugins/registry.ts）。 */
   plugins: Record<string, boolean>;
+  /** 官网访问通道：镜像（默认）/ DoH / 直连。 */
+  accessChannel: AccessChannelPref;
+  /** DoH / 直连通道下先试 HTTP/3（QUIC），失败自动回落 TLS 分片。 */
+  h3First: boolean;
   scheme: ColorScheme;
   codeTheme: CodeThemePref;
   codeFont: CodeFontPref;
@@ -52,6 +59,8 @@ export const DEFAULT_PREFS: AppPrefs = {
   postingNoticeSkip: false,
   hotTopicsOpen: false,
   plugins: {},
+  accessChannel: 'mirror',
+  h3First: true,
   scheme: 'dark',
   codeTheme: 'auto',
   codeFont: 'jetbrains',
@@ -112,6 +121,8 @@ function parse(raw: string | null): AppPrefs {
       postingNoticeSkip: parsed.postingNoticeSkip === true,
       hotTopicsOpen: parsed.hotTopicsOpen === true,
       plugins: parsePlugins(parsed.plugins),
+      accessChannel: normalizeAccessChannel(parsed.accessChannel),
+      h3First: parsed.h3First !== false,
       scheme: parsed.scheme === 'light' ? 'light' : 'dark',
       codeTheme: pick(parsed.codeTheme, CODE_THEMES, DEFAULT_PREFS.codeTheme),
       codeFont: pick(parsed.codeFont, CODE_FONTS, DEFAULT_PREFS.codeFont),
@@ -123,6 +134,16 @@ function parse(raw: string | null): AppPrefs {
   } catch {
     return { ...DEFAULT_PREFS };
   }
+}
+
+function applyAccessChannel(next: AccessChannelPref) {
+  configureAccessChannel(next);
+  setNativeAccessChannel(next);
+}
+
+/** 把 QUIC 开关同步给原生（H3 拦截器读的是这份）。 */
+export function applyH3First(next: boolean) {
+  setNativeH3(next);
 }
 
 export function getPrefs(): AppPrefs {
@@ -140,12 +161,16 @@ export async function hydratePrefs() {
   if (hydrated) return current;
   hydrated = true;
   current = parse(await readRaw());
+  applyAccessChannel(current.accessChannel);
+  applyH3First(current.h3First);
   notify();
   return current;
 }
 
 export async function patchPrefs(patch: Partial<AppPrefs>) {
   current = { ...current, ...patch };
+  if (patch.accessChannel) applyAccessChannel(current.accessChannel);
+  if (patch.h3First !== undefined) applyH3First(current.h3First);
   notify();
   await writeRaw(JSON.stringify(current));
   return current;

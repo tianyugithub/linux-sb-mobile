@@ -41,11 +41,18 @@ class MainApplication : Application(), ReactApplication {
     get() = ReactNativeHostWrapper.createReactHost(applicationContext, reactNativeHost)
 
   override fun onCreate() {
+    TlsFrag.install()
+    LinuxAccess.init(this)
+    H3.init(this)
     val dns = DohDns.instance
-    OkHttpClientProvider.setOkHttpClientFactory {
-      OkHttpClientProvider.createClientBuilder(this)
-        .dns(dns)
-        .build()
+    val shared = LinuxHttp.build(OkHttpClientProvider.createClientBuilder(this))
+    OkHttpClientProvider.setOkHttpClientFactory { shared }
+    try {
+      val field = OkHttpClientProvider::class.java.getDeclaredField("client")
+      field.isAccessible = true
+      field.set(null, shared)
+    } catch (_: Exception) {
+      /* RN 以后改了字段名也没关系，factory 仍在 */
     }
     WebDnsProxy.start(dns)
     super.onCreate()

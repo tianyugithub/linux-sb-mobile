@@ -3,6 +3,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import type { IonName } from '../../data';
 import { FONT_LABEL, nextFontSize } from '../services/prefs';
 import { hasOfficialImageUpload, isR2Ready, loadR2Config } from '../services/r2-config';
+import { h3Status } from 'linux-notify';
 import {
   disablePush,
   enablePush,
@@ -19,7 +20,11 @@ import { C, SCHEME_LABEL } from '../theme/palette';
 import { CODE_FONT_LABEL, CODE_THEME_LABEL } from '../theme/code-themes';
 import { styles } from '../theme/app-styles';
 import { useNav } from '../navigation/nav';
-import { Icon, ScreenHeader, SettingsRow } from '../components/ui';
+import { Icon, ScreenHeader, SettingsRow, ActionSheet, type SheetItem } from '../components/ui';
+import {
+  ACCESS_CHANNEL_LABEL,
+  ACCESS_CHANNELS,
+} from '../utils/linux-access';
 import { topicFilterRules } from '../data/topic-filter';
 import { APP_NAME, APP_VERSION } from '../data/app-info';
 
@@ -31,10 +36,18 @@ export function SettingsScreen() {
   const filterRules = topicFilterRules(topicFilter.settings, topicFilter.context, true);
   const pendingFilter = topicFilter.pending;
   const ruleCount = filterRules.ruleCount;
+  const [h3Last, setH3Last] = useState('');
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  useEffect(() => {
+    const read = () => setH3Last(h3Status());
+    read();
+    const timer = setInterval(read, 3000);
+    return () => clearInterval(timer);
+  }, []);
   const [batteryOff, setBatteryOff] = useState(false);
   const [r2Ready, setR2Ready] = useState(false);
+  const [accessSheet, setAccessSheet] = useState<SheetItem[] | null>(null);
   const officialUpload = hasOfficialImageUpload(nav.me);
   useEffect(() => {
     void isPushEnabled().then(setPushOn);
@@ -45,7 +58,40 @@ export function SettingsScreen() {
     <View style={styles.flex}>
       <ScreenHeader title="设置" />
       <ScrollView contentContainerStyle={styles.pagePad}>
-      <Text style={[styles.profileSectionTitle, styles.settingsFirstSection]}>阅读</Text>
+      <Text style={[styles.profileSectionTitle, styles.settingsFirstSection]}>访问</Text>
+      <SettingsRow
+        icon="globe-outline"
+        title="官网访问通道"
+        value={ACCESS_CHANNEL_LABEL[prefs.accessChannel]}
+        onPress={() => {
+          setAccessSheet(ACCESS_CHANNELS.map((next) => ({
+            label: ACCESS_CHANNEL_LABEL[next],
+            onPress: () => {
+              void (async () => {
+                if (next === prefs.accessChannel) return;
+                await prefs.setAccessChannel(next);
+                nav.toast(`已改为${ACCESS_CHANNEL_LABEL[next]}`);
+              })();
+            },
+          })));
+        }}
+      />
+      <SettingsRow
+        icon="flash-outline"
+        title="HTTP/3 优先"
+        subtitle={prefs.accessChannel === 'mirror'
+          ? '镜像通道用不到；切到 DoH / 直连后生效'
+          : `DoH / 直连下先走 QUIC，失败自动回落${h3Last ? ` · 上次：${h3Last}` : ''}`}
+        value={prefs.h3First ? '开启' : '关闭'}
+        onPress={() => {
+          void (async () => {
+            const next = !prefs.h3First;
+            await prefs.setH3First(next);
+            nav.toast(next ? '已开启 HTTP/3 优先' : '已关闭 HTTP/3 优先');
+          })();
+        }}
+      />
+      <Text style={styles.profileSectionTitle}>阅读</Text>
       <SettingsRow
         icon={prefs.scheme === 'dark' ? 'moon-outline' : 'sunny-outline'}
         title="外观"
@@ -189,6 +235,7 @@ export function SettingsScreen() {
       />
       <Text style={styles.version}>{APP_NAME} · v{APP_VERSION}</Text>
       </ScrollView>
+      <ActionSheet title="官网访问通道" items={accessSheet} onClose={() => setAccessSheet(null)} />
     </View>
   );
 }

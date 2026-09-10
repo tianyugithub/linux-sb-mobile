@@ -3,6 +3,9 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 
 type LinuxNotifyNative = {
   setEnabled(enabled: boolean): void;
+  setAccessChannel?(channel: string): void;
+  setH3Enabled?(enabled: boolean): void;
+  h3Status?(): string;
   isEnabled(): boolean;
   syncSession(cookie: string, unread: number, baselined: boolean): void;
   start(): boolean;
@@ -20,6 +23,22 @@ const Native = requireOptionalNativeModule<LinuxNotifyNative>('LinuxNotify');
 export function setNotifyGuardEnabled(enabled: boolean) {
   if (Platform.OS !== 'android') return;
   Native?.setEnabled(enabled);
+}
+
+export function setAccessChannel(channel: 'mirror' | 'doh' | 'direct') {
+  if (Platform.OS !== 'android') return;
+  Native?.setAccessChannel?.(channel);
+}
+
+export function setH3Enabled(enabled: boolean) {
+  if (Platform.OS !== 'android') return;
+  Native?.setH3Enabled?.(enabled);
+}
+
+/** 上一次请求实际用的传输（HTTP/3 / 回落 TCP），给设置页显示。 */
+export function h3Status(): string {
+  if (Platform.OS !== 'android') return '';
+  return Native?.h3Status?.() ?? '';
 }
 
 export function syncNotifySession(cookie: string, unread = -1, baselined = true) {

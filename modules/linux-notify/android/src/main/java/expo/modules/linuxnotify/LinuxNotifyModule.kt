@@ -29,6 +29,44 @@ class LinuxNotifyModule : Module() {
       null
     }
 
+    Function("setH3Enabled") { value: Boolean ->
+      val context = appCtx() ?: return@Function null
+      try {
+        Class.forName("sb.linux.mobile.H3")
+          .getMethod("setEnabled", Boolean::class.javaPrimitiveType)
+          .invoke(null, value)
+      } catch (_: Exception) {
+        context.getSharedPreferences("lsb_access", Context.MODE_PRIVATE)
+          .edit()
+          .putBoolean("h3_first", value)
+          .apply()
+      }
+      null
+    }
+
+    Function("h3Status") {
+      try {
+        Class.forName("sb.linux.mobile.H3").getMethod("statusText").invoke(null) as? String ?: ""
+      } catch (_: Exception) {
+        ""
+      }
+    }
+
+    Function("setAccessChannel") { channel: String ->
+      val context = appCtx() ?: return@Function null
+      try {
+        val cls = Class.forName("sb.linux.mobile.LinuxAccess")
+        cls.getMethod("setChannel", String::class.java).invoke(null, channel)
+      } catch (_: Exception) {
+        val value = if (channel == "direct") "direct" else "mirror"
+        context.getSharedPreferences("lsb_access", Context.MODE_PRIVATE)
+          .edit()
+          .putString("channel", value)
+          .apply()
+      }
+      null
+    }
+
     Function("isEnabled") {
       val context = appCtx() ?: return@Function false
       NotifyPoller.prefs(context).getBoolean(NotifyPoller.KEY_ENABLED, false)
