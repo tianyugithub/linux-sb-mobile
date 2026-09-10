@@ -733,6 +733,16 @@ export function useNbEditor({
   const modeRef = useRef<EditorMode>('source');
   const richRef = useRef<RichEditorHandle>(null);
   const [wysiwyg, setWysiwyg] = useState<{ html: string; token: number } | null>(null);
+  /**
+   * 富文本内核最近一次回报的**活文档**。
+   *
+   * 全屏进出会把编辑区在 Modal 与页面之间搬一次，React 因此重挂组件 —— 富文本的 WebView
+   * 会按 `html` 重新建页。若用 `wysiwyg.html`（进富文本那一刻的快照）重建，全屏里改的内容
+   * 一退出就被旧快照盖掉（用户报的就是这个）。所以重建一律以这里为准。
+   */
+  const liveHtmlRef = useRef<string | null>(null);
+  /** 切换全屏期间挡住重复触发（要等一次内核回包）。 */
+  const fullscreenBusy = useRef(false);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
   const [sourceState, setSourceState] = useState<EditorSnapshot | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -803,6 +813,8 @@ export function useNbEditor({
 
   /** 进入所见即所得时对当前 markdown 做一次快照；之后 WebView 持有活文档。 */
   const enterWysiwyg = () => {
+    // 换模式时以当前 markdown 为准，别把上一次富文本留下的活文档捡回来
+    liveHtmlRef.current = null;
     setWysiwyg({ html: blocksToHtml(parseEditableArticle(valueRef.current)), token: Date.now() });
     setEmojiOpen(false);
     Keyboard.dismiss();
@@ -824,7 +836,40 @@ export function useNbEditor({
   };
 
   const onRichChange = (html: string) => {
+    liveHtmlRef.current = html;
     onChange(blocksToMarkdown(parseEditableArticle(html)));
+  };
+
+  /**
+   * 把内核里的活文档抓回来：更新重建用的快照，同时把 markdown 同步出去。
+   *
+   * 内核的 change 回包是节流的（250ms），临到切换时最后几次输入可能还没报上来，
+   * 所以切换全屏 / 切回代码模式之前主动问一次内核。
+   */
+  const captureLiveHtml = async (): Promise<string | null> => {
+    if (modeRef.current !== 'wysiwyg' || !richRef.current) return null;
+    const html = await richRef.current.flush();
+    if (!html) return null;
+    liveHtmlRef.current = html;
+    onChange(blocksToMarkdown(parseEditableArticle(html)));
+    return html;
+  };
+
+  /**
+   * 进出全屏。编辑区要在 Modal 与页面之间搬家（React 会重挂），所以富文本模式先落袋活文档，
+   * 否则重挂出来的 WebView 会用旧快照建页，把全屏里的修改丢掉。
+   */
+  const toggleFullscreen = async () => {
+    if (fullscreenBusy.current) return;
+    fullscreenBusy.current = true;
+    try {
+      await captureLiveHtml();
+      const next = !fullscreen;
+      setFullscreen(next);
+      if (!next && richText === 'fullscreen' && modeRef.current === 'wysiwyg') toggleMode();
+    } finally {
+      fullscreenBusy.current = false;
+    }
   };
 
   // 代码模式没有内核，按光标所在行/选区两侧推导按钮高亮，避免"选了也没状态"。
@@ -916,11 +961,7 @@ export function useNbEditor({
       onCommand={mode === 'wysiwyg' ? (name, payload) => richRef.current?.command(name, payload) : undefined}
       onInsertLink={() => openPrompt('link')}
       onVideo={() => openPrompt('video')}
-      onFullscreen={() => setFullscreen((open) => {
-        const next = !open;
-        if (!next && richText === 'fullscreen' && modeRef.current === 'wysiwyg') toggleMode();
-        return next;
-      })}
+      onFullscreen={() => { void toggleFullscreen(); }}
       fullscreen={fullscreen}
       snapshot={mode === 'wysiwyg' ? snapshot : sourceState}
       onEmoji={() => setEmojiOpen((open) => !open)}
@@ -987,7 +1028,7 @@ export function useNbEditor({
     <RichEditor
       key={wysiwyg.token}
       ref={richRef}
-      html={wysiwyg.html}
+      html={liveHtmlRef.current ?? wysiwyg.html}
       minHeight={surfaceMinHeight}
       maxHeight={fillHeight ? Number.MAX_SAFE_INTEGER : (docked ? 320 : 520)}
       seamless={Boolean(fillHeight)}
