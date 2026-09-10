@@ -263,7 +263,22 @@ object H3 {
       responseInfo.allHeaders.forEach { (name, values) ->
         if (!name.startsWith(":")) values.forEach { headers.add(name, it) }
       }
+      val bytes = sink.toByteArray()
+      /*
+       * Cronet 已经在传输层把 gzip 解开了，却仍然留着 `Content-Encoding: gzip`。
+       * 若把这个头原样交给 OkHttp，BridgeInterceptor 会**再解一次**（对着明文 gunzip）并抛错，
+       * 上层看到的就是「暂时连不上官网」。所以按实际字节判断：不是 gzip 魔数就把头摘掉。
+       */
+      val gzipped = bytes.size > 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()
+      if (!gzipped) headers.removeAll("Content-Encoding")
       val built = headers.build()
+      val magic = if (bytes.size > 1) "%02x%02x".format(bytes[0], bytes[1]) else "--"
+      Log.d(
+        TAG,
+        "resp ${responseInfo.httpStatusCode} ${request.url.encodedPath} " +
+          "ct=${built["Content-Type"]} ce=${built["Content-Encoding"]} " +
+          "cl=${built["Content-Length"]} len=${bytes.size} head=$magic",
+      )
       val http3 = responseInfo.negotiatedProtocol?.contains("h3") == true
       H3.record(if (http3) "HTTP/3" else "回落 TCP（${responseInfo.negotiatedProtocol ?: "?"}）")
       if (http3) Log.i(TAG, "QUIC 命中：${request.url} ${responseInfo.httpStatusCode}")
