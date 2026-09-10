@@ -26,6 +26,7 @@ type MineActions = {
   onMyTitles: () => void;
   onTitlePress: () => void;
   onInvite: () => void;
+  onWallet: () => void;
   onCollections: () => void;
   onIdentity: () => void;
   onMyTopics: () => void;
@@ -188,9 +189,9 @@ function MineBody(props: MineActions) {
               text="我的积分"
               onPress={props.onLeaderboard}
             />
+            <GridItem icon={<Glyph name="wallet" tone="orange" />} text="我的烧饼" onPress={props.onWallet} />
             <GridItem icon={<Glyph name="ribbon" tone="gold" />} text="我的称号" onPress={props.onMyTitles} />
             <GridItem icon={<Glyph name="albums" tone="blue" />} text="淘帖专辑" onPress={props.onCollections} />
-            <GridItem icon={<Glyph name="ticket" tone="rose" />} text="邀请中心" onPress={props.onInvite} />
           </Grid>
         </Card>
 
@@ -224,7 +225,7 @@ function MineBody(props: MineActions) {
             <Cell title="登录账号" isLink center onClick={props.onLogin} />
           )}
         </View>
-        <Text style={styles.version}>LINUX SB · v0.1.0</Text>
+        <Text style={styles.version}>LINUX SB · v0.1.1</Text>
       </View>
     </ScrollView>
   );

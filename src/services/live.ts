@@ -525,7 +525,7 @@ function bustGachaCache() {
 }
 
 export function bustAccountCache() {
-  bustHtml(/\/user\/|\/daily_checkin|\/gacha|\/identity_center|\/invite_center|\/notification/);
+  bustHtml(/\/user\/|\/daily_checkin|\/gacha|\/identity_center|\/invite_center|\/notification|\/community_wallet/);
   bustUnreadCount();
 }
 
@@ -3324,6 +3324,49 @@ function parsePoints(checkinHtml: string, historyHtml: string, balanceHint = 0):
   };
 }
 
+function parseWalletList(html: string, className: string) {
+  const ul = html.match(new RegExp(`class="${className}"[\\s\\S]*?</ul>`))?.[0] || '';
+  return (ul.match(/<li\b[^>]*>[\s\S]*?<\/li>/g) ?? []).flatMap((item) => {
+    if (/\bempty-state\b/.test(item)) return [];
+    const text = stripTags(item);
+    if (!text) return [];
+    const amount = item.match(/([+-]\s*\d+(?:\.\d+)?)\s*烧饼/)?.[1]?.replace(/\s+/g, '')
+      || text.match(/([+-]\d+(?:\.\d+)?)/)?.[1]
+      || '';
+    const time = item.match(/(\d{4}[/-]\d{1,2}[/-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)/)?.[1]
+      || item.match(/(\d{1,2}:\d{2})/)?.[1]
+      || '';
+    return [{ time, text, amount }];
+  });
+}
+
+function parseWalletPage(html: string) {
+  const hero = html.match(/class="community-wallet-hero"[\s\S]*?<\/section>/)?.[0] || '';
+  const balanceBlock = html.match(/class="community-wallet-balance"[\s\S]*?<\/div>/)?.[0] || '';
+  const strong = balanceBlock.match(/<strong>([\s\S]*?)<\/strong>/)?.[1] || '';
+  const balance = Number(stripTags(strong).replace(/[^\d.-]/g, '')) || 0;
+  const unit = first(balanceBlock, /<span>([^<]+)/) || '烧饼';
+  const lead = first(hero, /<p>([\s\S]*?)<\/p>/) || '烧饼仅用于社区功能消费，不支持提现、现金兑换或用户间转账。';
+  const placeholder = html.match(/name="code"[^>]*placeholder="([^"]+)"/)?.[1]
+    || html.match(/placeholder="([^"]+)"[^>]*name="code"/)?.[1]
+    || 'SB-XXXX-XXXX-XXXX-XXXX';
+  const redeemHint = html.match(/community_wallet_redeem[\s\S]*?<small>([\s\S]*?)<\/small>/)?.[1] || '';
+  const shopUrl = html.match(/href="(https:\/\/catfk\.com\/shop\/[^"]+)"/)?.[1]
+    || 'https://catfk.com/shop/linuxsb';
+  return {
+    title: first(hero, /<h1>([^<]+)/) || '我的烧饼',
+    lead: stripTags(lead),
+    balance,
+    unit: stripTags(unit) || '烧饼',
+    redeemHint: stripTags(redeemHint) || '连续输入错误会被临时限制，请勿向他人泄露兑换码。',
+    placeholder: decode(placeholder),
+    helpUrl: '/topic/15751',
+    shopUrl,
+    ledger: parseWalletList(html, 'community-wallet-transactions'),
+    orders: parseWalletList(html, 'community-wallet-orders'),
+  };
+}
+
 function parseIdentityCriteria(section: string) {
   const rows = section.match(/<tr>[\s\S]*?<\/tr>/g) ?? [];
   return rows.flatMap((row) => {
@@ -4728,18 +4771,20 @@ async function dispatch(req: MockRequest): Promise<unknown> {
     requireCookie();
     const html = await fetchHtml('/gacha_market');
     const listingId = String(payload.listingId ?? payload.id ?? '').trim();
-    const quantity = Math.max(1, Number(payload.quantity ?? 1));
     if (!listingId) throw new MockApiError(400, 'BAD_REQUEST', '缺少交易编号');
     const listing = parseMarketPage(html, 1).items.find((item) => item.id === listingId);
+    const cap = listing ? Math.max(1, listing.max || listing.stock || 1) : 0;
+    const quantity = Math.max(1, Math.trunc(Number(payload.quantity ?? 1)) || 1);
+    const qty = cap ? Math.min(cap, quantity) : quantity;
     const balance = parsePointsAmount(html.match(/积分\s*([^<\n]+)/)?.[1]) || liveSessionUser()?.points || 0;
-    if (listing && balance < quantity * listing.price) {
-      const cost = quantity * listing.price;
+    if (listing && balance < qty * listing.price) {
+      const cost = qty * listing.price;
       throw new MockApiError(400, 'UPSTREAM', `购买失败：积分不足，需要 ${cost.toLocaleString('zh-CN')} 积分`);
     }
     const posted = await postForm('/gacha_market_buy', {
       _csrf: csrfFrom(html),
       listing_id: listingId,
-      quantity: String(quantity),
+      quantity: String(qty),
       return_q: String(payload.q ?? ''),
       return_rarity: String(payload.rarity ?? ''),
       return_sort: String(payload.sort ?? 'latest'),
@@ -4798,6 +4843,41 @@ async function dispatch(req: MockRequest): Promise<unknown> {
     const html = await fetchHtml('/gacha_market_orders');
     if (isLoginWall(html)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
     return { items: parseMarketOrders(html) };
+  }
+
+  if (path === '/wallet' && method === 'GET') {
+    requireCookie();
+    const html = await fetchHtml('/community_wallet', undefined, { fresh: query.fresh === '1' });
+    if (isLoginWall(html)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录后查看烧饼钱包');
+    return parseWalletPage(html);
+  }
+
+  if (path === '/wallet/redeem' && method === 'POST') {
+    requireCookie();
+    const code = String(payload.code ?? '').trim();
+    if (!code) throw new MockApiError(400, 'VALIDATION', '请输入兑换码');
+    const page = await fetchHtml('/community_wallet', undefined, { fresh: true });
+    if (isLoginWall(page)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录后兑换');
+    const posted = await postForm('/community_wallet_redeem', { _csrf: csrfFrom(page), code }, false);
+    if (isLoginWall(posted.html)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录后兑换');
+    const failed = parseFormErrorMessage(posted.html, posted.cookies, posted.url);
+    const flash = postedMessage(posted);
+    if (failed && /限制|错误|无效|失败|不正确|不存在|已使用|用过/.test(failed) && !/成功|到账/.test(failed)) {
+      throw new MockApiError(400, 'UPSTREAM', failed);
+    }
+    if (flash && /限制|错误|无效|失败|不正确|不存在|已使用|用过/.test(flash) && !/成功|到账/.test(flash)) {
+      throw new MockApiError(400, 'UPSTREAM', flash);
+    }
+    bustHtml(/\/community_wallet/);
+    const nextHtml = /community-wallet-page/.test(posted.html)
+      ? posted.html
+      : await fetchHtml('/community_wallet', undefined, { fresh: true });
+    const wallet = parseWalletPage(nextHtml);
+    return {
+      ok: true,
+      message: flash || failed || '兑换成功',
+      balance: wallet.balance,
+    };
   }
 
   if (path === '/invites' && method === 'GET') {

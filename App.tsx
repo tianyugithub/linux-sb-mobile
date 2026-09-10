@@ -48,6 +48,7 @@ import { PluginListScreen } from './src/screens/PluginListScreen';
 import { HelperScreen } from './src/screens/helper/HelperScreen';
 import { TopicDetailScreen } from './src/screens/TopicDetailScreen';
 import { UserScreen } from './src/screens/UserScreen';
+import { WalletScreen } from './src/screens/WalletScreen';
 
 /** 登录 / 注册 / 退出时清掉查询缓存与未读记忆，避免串号显示上一个账号的数据。 */
 function resetAccountCaches() {
@@ -315,6 +316,7 @@ function AppRoot() {
         if (lastTab === nextTab) return current;
         return [...current.slice(0, -1), page];
       }
+      if (last?.name === 'wallet' && page.name === 'wallet') return current;
       return [...current, page];
     }),
     close: () => setStack((current) => current.slice(0, -1)),
@@ -519,6 +521,7 @@ function AppRoot() {
   else if (extra?.name === 'search') extraView = <SearchScreen />;
   else if (extra?.name === 'leaderboard') extraView = <LeaderboardScreen />;
   else if (extra?.name === 'invite') extraView = <InviteScreen />;
+  else if (extra?.name === 'wallet') extraView = <WalletScreen />;
   else if (extra?.name === 'titles') extraView = <TitlesScreen initialTab={extra.tab ?? '称号抽取'} />;
   else if (extra?.name === 'collections') extraView = <CollectionsScreen initialTab={extra.tab === 'mine' ? '我的淘帖' : '大家的淘帖'} />;
   else if (extra?.name === 'collection') extraView = <CollectionDetail album={extra.album} />;

@@ -396,16 +396,22 @@ export function parseMarketListings(html: string): TitleMarketPageDto {
     const name = catalogTitleIn(block.match(/gacha-title-name">([^<]+)/)?.[1] ?? '');
     if (!name) continue;
     const listingId = block.match(/name="listing_id"\s+value="(\d+)"/)?.[1] ?? '';
-    const max = Number(block.match(/name="quantity"[^>]*max="(\d+)"/)?.[1] ?? block.match(/剩余 <strong>(\d+)/)?.[1] ?? 1);
+    const stock = Number(block.match(/剩余 <strong>(\d+)/)?.[1] ?? 0);
+    const max = Number(
+      block.match(/name="quantity"[^>]*\bmax="(\d+)"/)?.[1]
+      ?? block.match(/\bmax="(\d+)"[^>]*name="quantity"/)?.[1]
+      ?? stock
+      ?? 1,
+    );
     items.push({
       id: listingId,
       name,
       rarity: rarityFrom(block, name),
       price: parsePointsAmount(block.match(/data-gacha-market-price="([^"]+)"/)?.[1])
         || parsePointsAmount(block.match(/单价\s*<strong>([^<]+)/)?.[1]),
-      stock: Number(block.match(/剩余 <strong>(\d+)/)?.[1] ?? max),
+      stock: stock || max,
       remain: decode(block.match(/剩余时间 <strong>([^<]+)/)?.[1] ?? '').trim(),
-      max: max || 1,
+      max: max || stock || 1,
     });
   }
   const total = Number(html.match(/共\s*(\d+)\s*条/)?.[1] ?? items.length);

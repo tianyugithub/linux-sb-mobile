@@ -755,6 +755,31 @@ export type ProfileDto = {
   deleteUrl: string;
 };
 
+export type WalletLedgerDto = {
+  time: string;
+  text: string;
+  amount: string;
+};
+
+export type WalletPageDto = {
+  title: string;
+  lead: string;
+  balance: number;
+  unit: string;
+  redeemHint: string;
+  placeholder: string;
+  helpUrl: string;
+  shopUrl: string;
+  ledger: WalletLedgerDto[];
+  orders: WalletLedgerDto[];
+};
+
+export type WalletRedeemDto = {
+  ok: boolean;
+  message: string;
+  balance: number;
+};
+
 export type PointsDto = {
   balance: number;
   checkedIn: boolean;

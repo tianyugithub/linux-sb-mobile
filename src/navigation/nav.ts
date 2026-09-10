@@ -38,7 +38,8 @@ export type Extra =
   | { name: 'inbox' }
   | { name: 'dm'; userId: string; title?: string }
   | { name: 'report'; targetType: 'reply' | 'topic'; targetId: string; targetUser?: string; topicTitle?: string }
-  | { name: 'browser'; url: string; title?: string };
+  | { name: 'browser'; url: string; title?: string }
+  | { name: 'wallet' };
 
 export type Nav = {
   open: (page: Extra) => void;
@@ -136,6 +137,10 @@ export function openAppHref(nav: Nav, href: string, forum = '综合') {
   }
   if (action.type === 'home') {
     nav.openHomeSort(action.sort);
+    return;
+  }
+  if (action.type === 'wallet') {
+    nav.open({ name: 'wallet' });
     return;
   }
   nav.openBrowser(action.url);

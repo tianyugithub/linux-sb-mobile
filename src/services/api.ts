@@ -19,6 +19,8 @@ import type {
   IdentityDto,
   InvitePageDto,
   NotificationDto,
+  WalletPageDto,
+  WalletRedeemDto,
   PointsDto,
   ProfileDto,
   RankDto,
@@ -333,6 +335,10 @@ export const api = {
     apiRequest<{ ok: boolean; flash: string }>('POST', '/titles/market/cancel', { body: { listingId } }),
   titleMarketOrders: () => apiRequest<{ items: TitleMarketOrderDto[] }>('GET', '/titles/market/orders'),
   invites: () => apiRequest<InvitePageDto>('GET', '/invites'),
+  wallet: (opts?: { fresh?: boolean }) =>
+    apiRequest<WalletPageDto>('GET', '/wallet', { query: { fresh: opts?.fresh ? '1' : undefined } }),
+  redeemWallet: (code: string) =>
+    apiRequest<WalletRedeemDto>('POST', '/wallet/redeem', { body: { code } }),
   collections: (tab: 'everyone' | 'mine') =>
     apiRequest<{ items: CollectionDto[] }>('GET', '/collections', { query: { tab } }),
   collectionTopics: (id: string, cursor?: string | null) =>

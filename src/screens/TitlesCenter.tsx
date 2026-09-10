@@ -857,6 +857,52 @@ function MarketPane({ points, toast, refreshMe, needLogin, ask }: { points: numb
   );
 }
 
+function listingMax(item: TitleListingDto) {
+  return Math.max(1, item.max || item.stock || 1);
+}
+
+function MarketDeal({
+  item,
+  points,
+  onBuy,
+}: {
+  item: TitleListingDto;
+  points: number;
+  onBuy: (item: TitleListingDto, quantity: number) => void;
+}) {
+  const max = listingMax(item);
+  const [qty, setQty] = useState(1);
+  useEffect(() => {
+    setQty((current) => Math.min(max, Math.max(1, current)));
+  }, [max, item.id]);
+  const cost = qty * item.price;
+  const canBuy = points >= cost;
+  const buyLabel = canBuy ? (qty > 1 ? `购买 ${qty}` : '购买') : '积分不足';
+  return (
+    <AccountCard>
+      <View style={styles.deal}>
+        <Image source={titleArt(item.name)} style={styles.dealArt} />
+        <View style={styles.dealBody}>
+          <TitleChip name={item.name} rarity={item.rarity} compact />
+          <Text style={styles.meta}>剩余 {item.stock} · {item.remain || '—'}</Text>
+        </View>
+        <View style={styles.dealBuy}>
+          <Text style={styles.priceNow}>{item.price.toLocaleString('zh-CN')}</Text>
+          {max <= 1 ? (
+            <GradientButton compact tone={canBuy ? 'primary' : 'muted'} label={buyLabel} onPress={() => onBuy(item, 1)} />
+          ) : null}
+        </View>
+      </View>
+      {max > 1 ? (
+        <View style={styles.dealQty}>
+          <QtyStepper value={qty} max={max} onChange={setQty} />
+          <GradientButton compact tone={canBuy ? 'primary' : 'muted'} label={buyLabel} onPress={() => onBuy(item, qty)} />
+        </View>
+      ) : null}
+    </AccountCard>
+  );
+}
+
 function MarketBrowse({ points, toast, refreshMe, needLogin, ask }: { points: number; toast: (message: string) => void; refreshMe: () => Promise<void>; needLogin: () => boolean; ask: AskConfirm }) {
   const [q, setQ] = useState('');
   const [appliedQ, setAppliedQ] = useState('');
@@ -871,18 +917,19 @@ function MarketBrowse({ points, toast, refreshMe, needLogin, ask }: { points: nu
   const hasNext = Boolean(query.data?.nextCursor) || page < maxPage;
   const buy = (item: TitleListingDto, quantity: number) => {
     if (needLogin()) return;
-    const cost = quantity * item.price;
+    const qty = Math.min(listingMax(item), Math.max(1, Math.trunc(quantity) || 1));
+    const cost = qty * item.price;
     if (points < cost) {
       toast(`积分不足，需要 ${cost.toLocaleString('zh-CN')} 积分`);
       return;
     }
     ask({
       title: '确认购买',
-      text: `称号：${item.name}\n数量：${quantity} 个\n单价：${item.price.toLocaleString('zh-CN')} 积分\n总金额：${cost.toLocaleString('zh-CN')} 积分`,
+      text: `称号：${item.name}\n数量：${qty} 个\n单价：${item.price.toLocaleString('zh-CN')} 积分\n总金额：${cost.toLocaleString('zh-CN')} 积分`,
       confirmLabel: '确认',
       onConfirm: async () => {
         try {
-          const res = await api.buyTitleListing(item.id, quantity);
+          const res = await api.buyTitleListing(item.id, qty);
           query.reload();
           await refreshMe();
           toast(res.flash || '购买成功');
@@ -931,24 +978,9 @@ function MarketBrowse({ points, toast, refreshMe, needLogin, ask }: { points: nu
         </AccountCard>
       </View>
       <PaneScroll>
-      {items.map((item) => {
-        const canBuy = points >= item.price;
-        return (
-          <AccountCard key={item.id}>
-            <View style={styles.deal}>
-              <Image source={titleArt(item.name)} style={styles.dealArt} />
-              <View style={styles.dealBody}>
-                <TitleChip name={item.name} rarity={item.rarity} compact />
-                <Text style={styles.meta}>剩余 {item.stock} · {item.remain || '—'}</Text>
-              </View>
-              <View style={styles.dealBuy}>
-                <Text style={styles.priceNow}>{item.price.toLocaleString('zh-CN')}</Text>
-                <GradientButton compact tone={canBuy ? 'primary' : 'muted'} label={canBuy ? '购买' : '积分不足'} onPress={() => buy(item, 1)} />
-              </View>
-            </View>
-          </AccountCard>
-        );
-      })}
+      {items.map((item) => (
+        <MarketDeal key={item.id} item={item} points={points} onBuy={buy} />
+      ))}
       {items.length || page > 1 || hasNext ? (
         <View style={styles.pager}>
           <Pressable disabled={!hasPrev || query.fetching} onPress={() => setCursor(page <= 2 ? null : String(page - 1))} style={[styles.pagerBtn, !hasPrev && styles.pagerBtnOff]}>
@@ -1149,6 +1181,17 @@ function createTitleStyles() {
   dealArt: { width: 48, height: 48 },
   dealBody: { flex: 1, minWidth: 0, gap: 4 },
   dealBuy: { alignItems: 'flex-end', justifyContent: 'center', gap: 6 },
+  dealQty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: A.line,
+    flexWrap: 'wrap',
+  },
   priceNow: { color: A.red, fontSize: 18, fontWeight: '800' },
   settle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   settleRight: { flex: 1, alignItems: 'flex-end', gap: 8 },

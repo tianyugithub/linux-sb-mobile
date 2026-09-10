@@ -56,6 +56,7 @@ const API_PREFIXES = [
   '/invites',
   '/collections',
   '/identity',
+  '/wallet',
   '/uploads',
   '/search',
   '/media',

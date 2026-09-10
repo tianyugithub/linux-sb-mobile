@@ -29,6 +29,7 @@ export function ProfileScreen() {
       onMyTitles={() => nav.open({ name: 'titles', tab: '我的称号' })}
       onTitlePress={() => nav.open({ name: 'titles', tab: '称号抽取' })}
       onInvite={() => nav.open({ name: 'invite' })}
+      onWallet={() => nav.open({ name: 'wallet' })}
       onCollections={() => nav.open({ name: 'collections' })}
       onIdentity={() => nav.open({ name: 'identity' })}
       onMyTopics={() => nav.open({ name: 'my', kind: 'topics' })}

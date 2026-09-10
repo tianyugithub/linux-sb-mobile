@@ -47,6 +47,7 @@ export type AppHrefAction =
   | { type: 'login' }
   | { type: 'register' }
   | { type: 'home'; sort: string }
+  | { type: 'wallet' }
   | { type: 'browser'; url: string };
 
 function linuxHomeSort(pathname: string): string | null {
@@ -78,6 +79,8 @@ export function classifyAppHref(href: string): AppHrefAction {
       if (next.pathname === '/register' || next.pathname.replace(/\/+$/, '') === '/register') return { type: 'register' };
       const homeSort = linuxHomeSort(next.pathname);
       if (homeSort) return { type: 'home', sort: homeSort };
+      const path = next.pathname.replace(/\/+$/, '') || '/';
+      if (path === '/community_wallet') return { type: 'wallet' };
     }
   } catch {
     /* mailto / tel / opaque */

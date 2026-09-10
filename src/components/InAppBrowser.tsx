@@ -13,6 +13,10 @@ const CHROME_UA = Platform.select({
   default: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.146 Mobile Safari/537.36',
 });
 
+function isPayAppUrl(url: string): boolean {
+  return /^(alipays?|alipay|weixin|weixinulapi|weixinminiprogram|upwrp):/i.test(url);
+}
+
 function isWebUrl(url: string): boolean {
   return /^(https?|about|data):/i.test(url);
 }
@@ -136,6 +140,10 @@ export function InAppBrowser({
                   }
                 }
                 if (!next || isWebUrl(next)) return true;
+                if (isPayAppUrl(next)) {
+                  void Linking.openURL(next).catch(() => onToast('无法打开支付应用'));
+                  return false;
+                }
                 setCurrentUrl(next);
                 setConfirmOpen(true);
                 return false;
