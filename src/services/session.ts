@@ -57,6 +57,11 @@ function persistSite(snapshot: SiteSessionSnapshot) {
     writeLocal(USER_KEY, null);
     return;
   }
+  console.warn(
+    '[session] 保存会话',
+    `len=${record.cookies.length}`,
+    `bbs_auth=${/(^|;\s*)bbs_auth=/.test(record.cookies) ? 'yes' : 'no'}`,
+  );
   writeLocal(COOKIE_KEY, record.cookies);
   writeLocal(USER_KEY, JSON.stringify(record.user));
   void writeLinuxCookies(record.cookies);
@@ -73,6 +78,12 @@ export async function hydrateSession(): Promise<void> {
     memory.refreshToken = await nativeGet(REFRESH_KEY);
   }
   const cookies = Platform.OS === 'web' ? (webStore()?.getItem(COOKIE_KEY) ?? null) : await nativeGet(COOKIE_KEY);
+  // 飞行记录器：登录态再出问题时，日志里能直接看到「读到的 jar 有多大、含不含登录 cookie」。
+  console.warn(
+    '[session] 读取会话',
+    `len=${(cookies ?? '').length}`,
+    `bbs_auth=${/(^|;\s*)bbs_auth=/.test(cookies ?? '') ? 'yes' : 'no'}`,
+  );
   const userRaw = Platform.OS === 'web' ? (webStore()?.getItem(USER_KEY) ?? null) : await nativeGet(USER_KEY);
   if (memory.token && memory.refreshToken && userRaw) {
     try {
