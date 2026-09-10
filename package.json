@@ -28,7 +28,8 @@
     "check:code": "npx tsx scripts/check-code.ts",
     "check:links": "node scripts/run-stubbed.mjs scripts/check-links.ts",
     "postinstall": "node scripts/patch-rn-webview.mjs",
-    "check:store": "node scripts/run-stubbed.mjs scripts/check-store.ts"
+    "check:store": "node scripts/run-stubbed.mjs scripts/check-store.ts",
+    "check:apk": "npx tsx scripts/check-apk-version.ts"
   },
   "dependencies": {
     "@nutui/nutui-react-native": "0.0.8",
