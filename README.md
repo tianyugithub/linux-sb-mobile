@@ -114,6 +114,7 @@ modules/               原生模块，包含 Cookie 与本地通知
 
 ```bash
 npm run check:ui        # 写死颜色与自建 StyleSheet
+npm run check:hooks     # hook 调用不得出现在 return 之后（会崩 App）
 npm run check:update    # 检查更新的版本解析与比较
 npm run check:kernel    # 编辑器内核产物与源码一致
 npm run check:cache     # 冷启动快照

@@ -22,6 +22,13 @@ export function HelperSynthPane({ onDigest }: { onDigest?: (value: string) => vo
     [synth.entries, rangeLabel, rarityOf],
   );
 
+  // hooks 必须在早返回之前（见 HelperPointsPane 的说明：写在后面会因 hook 数量变化而崩）
+  const digestRef = useRef(onDigest);
+  digestRef.current = onDigest;
+  useEffect(() => {
+    digestRef.current?.(summary.count ? `${summary.count} 次` : '0 次');
+  }, [summary.count]);
+
   if (!synth.entries.length && synth.loading) {
     return (
       <>
@@ -36,11 +43,6 @@ export function HelperSynthPane({ onDigest }: { onDigest?: (value: string) => vo
 
   const consumption = summary.consumedByRarity;
   const production = summary.gainsByRarity;
-  const digestRef = useRef(onDigest);
-  digestRef.current = onDigest;
-  useEffect(() => {
-    digestRef.current?.(summary.count ? `${summary.count} 次` : '0 次');
-  }, [summary.count]);
 
   return (
     <>

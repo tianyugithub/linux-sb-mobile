@@ -65,6 +65,20 @@ export function HelperPointsPane({ onDigest }: { onDigest?: (value: string) => v
   const [range, setRange] = useState<LedgerRange>('today');
   const ledger = useLedger(nav.me.id, true);
 
+  /**
+   * 所有 hooks 必须在任何 return 之前。
+   *
+   * 这里踩过一次：useRef/useEffect 原本写在「加载中」的早返回之后 —— 首屏（loading）只走 2 个 hook，
+   * 数据到了走 4 个，React 抛「Rendered fewer hooks than expected」直接把 App 干掉
+   * （启用插件后打开插件页闪退就是这个）。todayNet 是纯计算，提前算不影响性能。
+   */
+  const todayNet = analyzeLedger(ledgerRowsForRange(ledger.rows, 'today')).net;
+  const digestRef = useRef(onDigest);
+  digestRef.current = onDigest;
+  useEffect(() => {
+    digestRef.current?.(`${todayNet >= 0 ? '+' : ''}${todayNet}`);
+  }, [todayNet]);
+
   // 有缓存就先渲染（秒开），后台只补最新的一两页
   if (!ledger.rows.length && ledger.loading) {
     return (
@@ -83,13 +97,6 @@ export function HelperPointsPane({ onDigest }: { onDigest?: (value: string) => v
   const rangeLabel = LEDGER_RANGES.find((item) => item.id === range)?.label ?? '今日';
   const expenseBuckets = analysis.buckets.filter((item) => item.amount < 0);
   const incomeBuckets = analysis.buckets.filter((item) => item.amount >= 0);
-  const todayNet = analyzeLedger(ledgerRowsForRange(ledger.rows, 'today')).net;
-  // hero 数字：用 effect 上报，渲染期间不 setState
-  const digestRef = useRef(onDigest);
-  digestRef.current = onDigest;
-  useEffect(() => {
-    digestRef.current?.(`${todayNet >= 0 ? '+' : ''}${todayNet}`);
-  }, [todayNet]);
 
   return (
     <>
