@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 import { File, Paths } from 'expo-file-system';
-import * as SecureStore from 'expo-secure-store';
 import {
   canInstallPackages,
   downloadApk,
@@ -22,7 +22,7 @@ export async function wasUpdateSkipped(version: string): Promise<boolean> {
   try {
     const stored = Platform.OS === 'web'
       ? (typeof localStorage === 'undefined' ? null : localStorage.getItem(SKIP_KEY))
-      : await SecureStore.getItemAsync(SKIP_KEY);
+      : await secureGet(SKIP_KEY);
     return normalizeUpdateTag(stored || '') === tag;
   } catch {
     return false;
@@ -37,7 +37,7 @@ export async function rememberSkippedUpdate(version: string): Promise<void> {
       localStorage.setItem(SKIP_KEY, tag);
       return;
     }
-    await SecureStore.setItemAsync(SKIP_KEY, tag);
+    await secureSet(SKIP_KEY, tag);
   } catch {
     /* ignore */
   }

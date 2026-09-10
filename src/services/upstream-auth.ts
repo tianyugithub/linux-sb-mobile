@@ -1,6 +1,7 @@
 import type { CaptchaChallengeDto, SessionDto, UserDto } from '../types/api';
 import { requestId } from '../utils/time';
 import { LINUX_ORIGIN, hydrateUser, isLoginWall, parseCurrentUserId, parseFormErrorMessage } from './live';
+import { isLiveOrigin, liveUrl, viaAccess } from '../utils/linux-access';
 import { MockApiError, type MockRequest, type MockResponse } from './mock';
 import {
   cookiesForToken,
@@ -124,9 +125,24 @@ function readCsrf(html: string): string | null {
     || null;
 }
 
+async function linuxFetch(url: string, init: RequestInit, timeoutMs = 15_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new MockApiError(504, 'UPSTREAM', '连接超时，请检查网络后重试');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function linuxGet(path: string, cookies: string, referer = '/'): Promise<{ cookies: string; html: string; url: string }> {
   const credentials = siteCredentials();
-  const response = await fetch(`${LINUX_ORIGIN}${path}`, {
+  const response = await linuxFetch(liveUrl(path), {
     headers: {
       ...browserHeaders(cookies, referer),
       'Cache-Control': 'no-cache',
@@ -154,7 +170,7 @@ async function postLogout(cookies: string, html: string): Promise<string> {
   }
   if (!csrf) return jar;
   try {
-    const posted = await fetch(`${LINUX_ORIGIN}/logout`, {
+    const posted = await linuxFetch(liveUrl('/logout'), {
       method: 'POST',
       headers: {
         ...browserHeaders(jar, '/'),
@@ -250,17 +266,18 @@ async function loginWithLinux(username: string, password: string, capToken: stri
   };
   let posted: Response;
   try {
-    posted = await fetch(`${LINUX_ORIGIN}/login`, { ...postInit, redirect: 'manual' });
+    posted = await linuxFetch(liveUrl('/login'), { ...postInit, redirect: 'manual' });
   } catch {
-    posted = await fetch(`${LINUX_ORIGIN}/login`, { ...postInit, redirect: 'follow' });
+    posted = await linuxFetch(liveUrl('/login'), { ...postInit, redirect: 'follow' });
   }
   cookies = applySetCookie(cookies, setCookiesOf(posted));
   const location = posted.headers.get('location') || posted.url || '';
 
   let html = '';
   if (posted.status >= 300 && posted.status < 400 && location) {
-    const next = new URL(location, LINUX_ORIGIN);
-    const landed = await fetch(next, { headers: browserHeaders(cookies), redirect: 'follow', credentials });
+    const next = new URL(location, liveUrl('/'));
+    const hop = isLiveOrigin(next.origin) || /\.linux\.sb$/i.test(next.hostname) ? viaAccess(next.toString()) : next.toString();
+    const landed = await linuxFetch(hop, { headers: browserHeaders(cookies), redirect: 'follow', credentials });
     cookies = applySetCookie(cookies, setCookiesOf(landed));
     html = await landed.text();
     const failed = loginFailureMessage(html, cookies, landed.url || next.toString());
@@ -297,7 +314,7 @@ async function sendRegisterEmailCode(email: string): Promise<{ ok: true }> {
   const csrf = readCsrf(page.html);
   if (!csrf) throw new MockApiError(502, 'UPSTREAM', '无法读取注册页');
   const cookies = applySetCookie(page.cookies, [`bbs_csrf=${csrf}`]);
-  const posted = await fetch(`${LINUX_ORIGIN}/user_review_email_code`, {
+  const posted = await linuxFetch(liveUrl('/user_review_email_code'), {
     method: 'POST',
     headers: {
       ...browserHeaders(cookies, '/register'),
@@ -354,17 +371,18 @@ async function registerWithLinux(input: {
   };
   let posted: Response;
   try {
-    posted = await fetch(`${LINUX_ORIGIN}/register`, { ...postInit, redirect: 'manual' });
+    posted = await linuxFetch(liveUrl('/register'), { ...postInit, redirect: 'manual' });
   } catch {
-    posted = await fetch(`${LINUX_ORIGIN}/register`, { ...postInit, redirect: 'follow' });
+    posted = await linuxFetch(liveUrl('/register'), { ...postInit, redirect: 'follow' });
   }
   cookies = applySetCookie(cookies, setCookiesOf(posted));
   const location = posted.headers.get('location') || posted.url || '';
   let html = '';
   let landedUrl = posted.url || location;
   if (posted.status >= 300 && posted.status < 400 && location) {
-    const next = new URL(location, LINUX_ORIGIN);
-    const landed = await fetch(next, { headers: browserHeaders(cookies, '/register'), redirect: 'follow', credentials });
+    const next = new URL(location, liveUrl('/'));
+    const hop = isLiveOrigin(next.origin) || /\.linux\.sb$/i.test(next.hostname) ? viaAccess(next.toString()) : next.toString();
+    const landed = await linuxFetch(hop, { headers: browserHeaders(cookies, '/register'), redirect: 'follow', credentials });
     cookies = applySetCookie(cookies, setCookiesOf(landed));
     html = await landed.text();
     landedUrl = landed.url || next.toString();
@@ -422,10 +440,16 @@ export async function getCaptchaConfig(): Promise<CaptchaChallengeDto> {
   return data;
 }
 
-export function captchaWidgetPage(cfg: CaptchaChallengeDto, theme?: { surface: string; surfaceRaised: string; surfaceSoft: string; line: string; text: string; red: string }): string {
-  const endpoint = cfg.endpoint.endsWith('/') ? cfg.endpoint : `${cfg.endpoint}/`;
-  const wasm = cfg.wasmUrl || 'https://cap.linux.sb/assets/cap_wasm_bg.wasm';
-  const script = cfg.widgetScript || 'https://cap.linux.sb/assets/widget.js';
+export function captchaWidgetPage(
+  cfg: CaptchaChallengeDto,
+  theme?: { surface: string; surfaceRaised: string; surfaceSoft: string; line: string; text: string; red: string },
+  assets?: { scriptText?: string; wasmDataUrl?: string },
+): string {
+  const endpointRaw = cfg.endpoint.endsWith('/') ? cfg.endpoint : `${cfg.endpoint}/`;
+  const endpoint = viaAccess(endpointRaw);
+  const wasm = assets?.wasmDataUrl || viaAccess(cfg.wasmUrl || 'https://cap.linux.sb/assets/cap_wasm_bg.wasm');
+  const script = viaAccess(cfg.widgetScript || 'https://cap.linux.sb/assets/widget.js');
+  const scriptText = assets?.scriptText?.replace(/<\/script/gi, '<\\/script') ?? '';
   const colors = theme ?? {
     surface: '#151A23',
     surfaceRaised: '#1C2330',
@@ -434,6 +458,15 @@ export function captchaWidgetPage(cfg: CaptchaChallengeDto, theme?: { surface: s
     text: '#F3F5F7',
     red: '#E1251B',
   };
+  const loadScript = scriptText
+    ? `<script>${scriptText}</script><script>boot();</script>`
+    : `<script>
+    var script = document.createElement('script');
+    script.src = ${JSON.stringify(script)};
+    script.onload = boot;
+    script.onerror = function () { send({ type: 'error', message: 'widget' }); };
+    document.head.appendChild(script);
+  </script>`;
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -456,6 +489,34 @@ export function captchaWidgetPage(cfg: CaptchaChallengeDto, theme?: { surface: s
   <script>
     window.CAP_CUSTOM_WASM_URL = ${JSON.stringify(wasm)};
     window.CAP_LANG = 'zh-cn';
+    window.CAP_DISABLE_WIDGET_REF = true;
+    window.__lsbCapId = 0;
+    window.__lsbCapWait = {};
+    window.CAP_CUSTOM_FETCH = function (url, init) {
+      init = init || {};
+      if (!window.ReactNativeWebView) return fetch(url, init);
+      return new Promise(function (resolve, reject) {
+        var id = String(++window.__lsbCapId);
+        window.__lsbCapWait[id] = { resolve: resolve, reject: reject };
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'cap-fetch',
+          id: id,
+          url: String(url),
+          method: String(init.method || 'GET'),
+          body: init.body == null ? null : String(init.body)
+        }));
+      });
+    };
+    window.__lsbCapDone = function (id, ok, status, body) {
+      var wait = window.__lsbCapWait[id];
+      if (!wait) return;
+      delete window.__lsbCapWait[id];
+      if (!ok) {
+        wait.reject(new Error(body || ('cap ' + status)));
+        return;
+      }
+      wait.resolve(new Response(body, { status: status, headers: { 'content-type': 'application/json' } }));
+    };
     function send(payload) {
       if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(payload));
     }
@@ -466,16 +527,15 @@ export function captchaWidgetPage(cfg: CaptchaChallengeDto, theme?: { surface: s
       widget.addEventListener('solve', function (event) {
         send({ type: 'solve', token: (event.detail && event.detail.token) || event.token || (widget && widget.token) });
       });
-      widget.addEventListener('error', function () { send({ type: 'error' }); });
+      widget.addEventListener('error', function (event) {
+        var detail = (event && event.detail) || {};
+        send({ type: 'error', code: detail.code, message: detail.message, blocked: detail.blocked });
+      });
       widget.addEventListener('reset', function () { send({ type: 'reset' }); });
       document.body.appendChild(widget);
     }
-    var script = document.createElement('script');
-    script.src = ${JSON.stringify(script)};
-    script.onload = boot;
-    script.onerror = function () { send({ type: 'error', message: 'widget' }); };
-    document.head.appendChild(script);
   </script>
+  ${loadScript}
 </body>
 </html>`;
 }
@@ -504,9 +564,9 @@ async function dispatch(req: MockRequest): Promise<unknown> {
     const provider = String(payload.provider ?? '');
     const captchaToken = String(payload.captchaToken ?? '');
     const oauthCookies = String(payload.oauthCookies ?? '');
+    if (oauthCookies) return loginWithOAuth(oauthCookies);
     if (provider === 'github' || provider === 'google') {
-      if (!oauthCookies) throw new MockApiError(400, 'OAUTH', '请先完成授权');
-      return loginWithOAuth(oauthCookies);
+      throw new MockApiError(400, 'OAUTH', '请先完成授权');
     }
     if (provider) throw new MockApiError(501, 'OAUTH_UNAVAILABLE', '该登录方式尚未接入');
     if (!username) throw new MockApiError(400, 'VALIDATION', '请输入用户名');

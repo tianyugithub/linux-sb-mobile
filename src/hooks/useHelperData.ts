@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as SecureStore from 'expo-secure-store';
+import { secureDelete, secureGet, secureSet } from '../services/secure-value';
 import { api } from '../services/api';
 import { titleRarityOf, type TitleRarity } from '../data/title-catalog';
 import {
@@ -392,7 +392,7 @@ export const EMPTY_MARKET_STORE: MarketStore = { watches: [], notified: {} };
 export async function loadMarketStore(uid: string): Promise<MarketStore> {
   if (!uid) return EMPTY_MARKET_STORE;
   try {
-    const raw = await SecureStore.getItemAsync(MARKET_KEY(uid));
+    const raw = await secureGet(MARKET_KEY(uid));
     if (!raw) return EMPTY_MARKET_STORE;
     const parsed = JSON.parse(raw) as Partial<MarketStore>;
     const watches = Array.isArray(parsed.watches)
@@ -413,7 +413,7 @@ export async function loadMarketStore(uid: string): Promise<MarketStore> {
 export async function saveMarketStore(uid: string, store: MarketStore): Promise<void> {
   if (!uid) return;
   try {
-    await SecureStore.setItemAsync(MARKET_KEY(uid), JSON.stringify(store));
+    await secureSet(MARKET_KEY(uid), JSON.stringify(store));
   } catch {
     /* 写失败只是下次打开丢监控项 */
   }

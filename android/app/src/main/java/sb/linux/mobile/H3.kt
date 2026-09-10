@@ -123,14 +123,22 @@ object H3 {
       }
     }
     val body = request.body?.let { toBytes(it) }
-    if (body != null) {
-      /*
-       * 用三参数版本：单参数版会自带 `Content-Type: application/x-www-form-urlencoded`，
-       * 我们再加一个真的 Content-Type 就会**重复**，服务端（如 Cap 验证、登录）可能因此拒绝。
-       */
+    /*
+     * 只有真的带内容时才挂 upload provider。
+     *
+     * Cronet 的规矩：只要设置了上传数据，就**必须**有 Content-Type，否则 build() 直接抛
+     * 「Requests with upload data must have a Content-Type.」—— 而 Cap 人机验证的挑战是
+     * 「POST 但空 body」，App 这时不会设 Content-Type，于是整个验证在内置浏览器里永远失败
+     * （只有走 H3 的 DoH 通道会中招，镜像通道正常）。
+     *
+     * 用三参数重载：单参数版会自带 `application/x-www-form-urlencoded`，会和请求里已有的
+     * Content-Type 撞成两个头。请求已带 Content-Type 时也不重复添加。
+     */
+    if (body != null && body.isNotEmpty()) {
       builder.setUploadDataProvider(UploadDataProviders.create(body, 0, body.size), executor)
-      val type = request.body?.contentType()?.toString()
-      if (type != null) builder.addHeader("Content-Type", type)
+      if (request.header("Content-Type") == null) {
+        builder.addHeader("Content-Type", "application/octet-stream")
+      }
     }
     val urlRequest = builder.build()
     urlRequest.start()

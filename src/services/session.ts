@@ -1,11 +1,12 @@
 import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 import {
   getSiteSessionSnapshot,
   restoreSiteSession,
   setSiteSessionPersist,
   type SiteSessionSnapshot,
 } from './site-session';
+import { writeLinuxCookies } from '../utils/site-cookies';
 
 const TOKEN_KEY = 'lsb.access';
 const REFRESH_KEY = 'lsb.refresh';
@@ -28,16 +29,13 @@ function webStore(): Storage | null {
 }
 
 async function nativeGet(key: string): Promise<string | null> {
-  try {
-    return await SecureStore.getItemAsync(key);
-  } catch {
-    return null;
-  }
+  // 分片读写：cookie jar 很容易超过安卓 SecureStore 的 2KB 单值上限，
+  // 超限是**静默失败**，表现就是「什么都没干登录态就没了」。见 secure-value.ts。
+  return secureGet(key);
 }
 
 function nativeSet(key: string, value: string | null) {
-  const task = value ? SecureStore.setItemAsync(key, value) : SecureStore.deleteItemAsync(key);
-  void task.catch(() => undefined);
+  void (value ? secureSet(key, value) : secureDelete(key)).catch(() => undefined);
 }
 
 function writeLocal(key: string, value: string | null) {
@@ -61,6 +59,7 @@ function persistSite(snapshot: SiteSessionSnapshot) {
   }
   writeLocal(COOKIE_KEY, record.cookies);
   writeLocal(USER_KEY, JSON.stringify(record.user));
+  void writeLinuxCookies(record.cookies);
 }
 
 export async function hydrateSession(): Promise<void> {
@@ -92,6 +91,7 @@ export async function hydrateSession(): Promise<void> {
     }
   }
   setSiteSessionPersist(persistSite);
+  if (cookies) void writeLinuxCookies(cookies);
   memory.hydrated = true;
 }
 

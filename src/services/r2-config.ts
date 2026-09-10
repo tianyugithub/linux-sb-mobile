@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 
 const KEY = 'lsb.r2.config';
 const TARGET_KEY = 'lsb.image.uploadTarget';
@@ -89,7 +89,7 @@ export function resolveImageUploadTarget(opts: {
 async function readStore(key: string): Promise<string | null> {
   try {
     if (Platform.OS === 'web') return webStore()?.getItem(key) ?? null;
-    return await SecureStore.getItemAsync(key);
+    return await secureGet(key);
   } catch {
     return null;
   }
@@ -100,7 +100,7 @@ async function writeStore(key: string, value: string): Promise<void> {
     webStore()?.setItem(key, value);
     return;
   }
-  await SecureStore.setItemAsync(key, value);
+  await secureSet(key, value);
 }
 
 export async function loadImageUploadTarget(): Promise<ImageUploadTarget | null> {
@@ -153,7 +153,7 @@ export async function clearR2Config(): Promise<void> {
     return;
   }
   try {
-    await SecureStore.deleteItemAsync(KEY);
+    await secureDelete(KEY);
   } catch {
     /* ignore */
   }

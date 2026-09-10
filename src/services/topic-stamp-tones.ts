@@ -1,4 +1,3 @@
-import * as SecureStore from 'expo-secure-store';
 import {
   TOPIC_STAMPS,
   learnedStampTones,
@@ -8,6 +7,7 @@ import {
   stampToneForKind,
   type TopicStampTone,
 } from '../data/topic-stamp';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 /**
  * 让「官网以后新加的印章」也能自动上色。
  *
@@ -27,7 +27,7 @@ let cssFetched = false;
 
 async function persist() {
   try {
-    await SecureStore.setItemAsync(KEY, JSON.stringify(learnedStampTones()));
+    await secureSet(KEY, JSON.stringify(learnedStampTones()));
   } catch {
     /* 缓存写失败只是下次多读一次 CSS */
   }
@@ -37,7 +37,7 @@ async function hydrate() {
   if (hydrated) return;
   hydrated = true;
   try {
-    const raw = await SecureStore.getItemAsync(KEY);
+    const raw = await secureGet(KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as Record<string, TopicStampTone>;
     if (parsed && typeof parsed === 'object') rememberStampTones(parsed);

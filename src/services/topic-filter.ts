@@ -1,4 +1,3 @@
-import * as SecureStore from 'expo-secure-store';
 import {
   EMPTY_TOPIC_FILTER,
   EMPTY_TOPIC_FILTER_CONTEXT,
@@ -6,6 +5,7 @@ import {
   type TopicFilterContext,
   type TopicFilterSettings,
 } from '../data/topic-filter';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 import { api } from './api';
 
 /**
@@ -106,8 +106,8 @@ async function writeCache(next: TopicFilterCache | null) {
   notify();
   if (!userId) return;
   try {
-    if (next) await SecureStore.setItemAsync(keyFor(userId), JSON.stringify(next));
-    else await SecureStore.deleteItemAsync(keyFor(userId));
+    if (next) await secureSet(keyFor(userId), JSON.stringify(next));
+    else await secureDelete(keyFor(userId));
   } catch {
     /* 写失败只是下次冷启动没有缓存 */
   }
@@ -115,7 +115,7 @@ async function writeCache(next: TopicFilterCache | null) {
 
 async function readCache(id: string): Promise<TopicFilterCache | null> {
   try {
-    const raw = await SecureStore.getItemAsync(keyFor(id));
+    const raw = await secureGet(keyFor(id));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<TopicFilterCache>;
     if (!parsed || typeof parsed !== 'object') return null;

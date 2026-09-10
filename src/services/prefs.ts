@@ -1,6 +1,6 @@
 import { Platform, StyleSheet, type TextStyle } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import { setAccessChannel as setNativeAccessChannel, setH3Enabled as setNativeH3 } from 'linux-notify';
+import { secureGet, secureSet } from './secure-value';
 import type { ColorScheme } from '../theme/palette';
 import type { CodeFontId, CodeSizeId, CodeThemeId } from '../theme/code-themes';
 import { configureAccessChannel, normalizeAccessChannel, type AccessChannel } from '../utils/linux-access';
@@ -81,24 +81,17 @@ function notify() {
 }
 
 async function readRaw(): Promise<string | null> {
-  try {
-    if (Platform.OS === 'web') return localStorage.getItem(KEY);
-    return await SecureStore.getItemAsync(KEY);
-  } catch {
-    return null;
-  }
+  if (Platform.OS === 'web') return localStorage.getItem(KEY);
+  return secureGet(KEY);
 }
 
 async function writeRaw(value: string) {
-  try {
-    if (Platform.OS === 'web') {
-      localStorage.setItem(KEY, value);
-      return;
-    }
-    await SecureStore.setItemAsync(KEY, value);
-  } catch {
-    /* ignore */
+  if (Platform.OS === 'web') {
+    localStorage.setItem(KEY, value);
+    return;
   }
+  // 偏好也会长大（插件开关、屏蔽规则…），同样走分片，别再撞 2KB 上限。
+  await secureSet(KEY, value);
 }
 
 /** 插件开关：只接受布尔值，坏数据丢掉。 */

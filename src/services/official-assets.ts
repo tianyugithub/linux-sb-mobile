@@ -1,8 +1,8 @@
-import * as SecureStore from 'expo-secure-store';
 import {
   EMPTY_OFFICIAL_ASSETS,
   type OfficialAssets,
 } from '../data/official-assets';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 import {
   POSTING_NOTICE_CONSEQUENCE,
   POSTING_NOTICE_CONSEQUENCE_LABEL,
@@ -83,7 +83,7 @@ export function keywordFilterLimits() {
 
 async function persist(next: OfficialAssets) {
   try {
-    await SecureStore.setItemAsync(CACHE_KEY, JSON.stringify({ at: Date.now(), assets: next }));
+    await secureSet(CACHE_KEY, JSON.stringify({ at: Date.now(), assets: next }));
   } catch {
     /* 写失败只是下次再读一遍官网 */
   }
@@ -93,7 +93,7 @@ async function hydrate() {
   if (hydrated) return;
   hydrated = true;
   try {
-    const raw = await SecureStore.getItemAsync(CACHE_KEY);
+    const raw = await secureGet(CACHE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as { at?: number; assets?: OfficialAssets };
     if (!parsed?.assets || Date.now() - Number(parsed.at || 0) > CACHE_TTL) return;

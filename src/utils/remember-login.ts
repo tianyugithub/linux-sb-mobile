@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+import { secureDelete, secureGet, secureSet } from '../services/secure-value';
 
 const KEY = 'lsb.remember_login';
 
@@ -18,7 +18,7 @@ export async function loadRememberedLogin(): Promise<RememberedLogin | null> {
   try {
     const raw = Platform.OS === 'web'
       ? webStore()?.getItem(KEY) ?? null
-      : await SecureStore.getItemAsync(KEY);
+      : await secureGet(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<RememberedLogin>;
     if (!parsed.username || typeof parsed.password !== 'string') return null;
@@ -38,7 +38,7 @@ export function saveRememberedLogin(input: RememberedLogin) {
     }
     return;
   }
-  void SecureStore.setItemAsync(KEY, raw).catch(() => undefined);
+  void secureSet(KEY, raw).catch(() => undefined);
 }
 
 export function clearRememberedLogin() {
@@ -50,5 +50,5 @@ export function clearRememberedLogin() {
     }
     return;
   }
-  void SecureStore.deleteItemAsync(KEY).catch(() => undefined);
+  void secureDelete(KEY).catch(() => undefined);
 }

@@ -1,6 +1,6 @@
 import { AppState, Linking, Platform } from 'react-native';
+import { secureDelete, secureGet, secureSet } from './secure-value';
 import * as Notifications from 'expo-notifications';
-import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import { api } from './api';
@@ -53,7 +53,7 @@ function native(): boolean {
 
 async function storeGet(key: string): Promise<string | null> {
   try {
-    return await SecureStore.getItemAsync(key);
+    return await secureGet(key);
   } catch {
     return null;
   }
@@ -61,8 +61,8 @@ async function storeGet(key: string): Promise<string | null> {
 
 async function storeSet(key: string, value: string | null) {
   try {
-    if (value == null) await SecureStore.deleteItemAsync(key);
-    else await SecureStore.setItemAsync(key, value);
+    if (value == null) await secureDelete(key);
+    else await secureSet(key, value);
   } catch {
     /* ignore */
   }

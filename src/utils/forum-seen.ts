@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+import { secureDelete, secureGet, secureSet } from '../services/secure-value';
 
 type Seen = { today: number; latest: string; day: string };
 
@@ -21,7 +21,7 @@ function persist() {
     }
     return;
   }
-  void SecureStore.setItemAsync(KEY, raw).catch(() => undefined);
+  void secureSet(KEY, raw).catch(() => undefined);
 }
 
 export async function hydrateForumSeen() {
@@ -30,7 +30,7 @@ export async function hydrateForumSeen() {
   try {
     const raw = Platform.OS === 'web'
       ? localStorage.getItem(KEY)
-      : await SecureStore.getItemAsync(KEY);
+      : await secureGet(KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as Record<string, Seen>;
     map = { ...parsed, ...map };
