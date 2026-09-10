@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Image, ScrollView, Text, View } from 'react-native';
+import { Image, Platform, ScrollView, Text, View } from 'react-native';
 import {
   ABOUT_DATA,
   ABOUT_DISCLAIMER,
@@ -13,7 +13,8 @@ import {
   PROJECT_URL,
   TECH_STACK,
 } from '../data/app-info';
-import { checkForUpdate, type UpdateResult } from '../services/app-update';
+import { downloadAndInstallUpdate } from '../services/app-install';
+import { checkForUpdate, updatePromptText, type UpdateResult } from '../services/app-update';
 import { styles } from '../theme/app-styles';
 import { useNav } from '../navigation/nav';
 import {
@@ -28,7 +29,7 @@ import {
  * 关于项目。
  *
  * 版本号等全部来自 `src/data/app-info.ts`（唯一来源是 app.json），页面里不写死。
- * 仓库推上去之后填 `PROJECT_URL`，「项目主页」入口与后续的「检查更新」都会出现在这里。
+ * 「检查更新」读 GitHub latest release：有 APK 就直接下载安装，没有再打开发布页。
  */
 export function AboutScreen() {
   const nav = useNav();
@@ -48,13 +49,24 @@ export function AboutScreen() {
       } else if (next.status === 'error') {
         nav.toast(next.message);
       } else if (next.status === 'available') {
+        const canInstall = Platform.OS === 'android' && Boolean(next.apkUrl);
         setDialog({
-          title: `发现新版本 v${next.latest}`,
-          text: next.notes
-            ? `${next.notes.slice(0, 200)}\n\n当前版本 v${next.current}，是否打开发布页？`
-            : `当前版本 v${next.current}。是否打开项目发布页查看？`,
-          confirmLabel: '打开发布页',
-          onConfirm: () => nav.openBrowser(next.url, `新版本 v${next.latest}`),
+          title: `发现新版本 v${next.latest.replace(/^[vV]/, '')}`,
+          text: updatePromptText(next),
+          confirmLabel: canInstall ? '下载安装' : '打开发布页',
+          onConfirm: async () => {
+            if (!canInstall) {
+              nav.openBrowser(next.url, `新版本 v${next.latest}`);
+              return;
+            }
+            try {
+              await downloadAndInstallUpdate(next, nav.toast);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : '下载失败';
+              if (message !== 'NEED_PERMISSION') nav.toast(message);
+              throw err;
+            }
+          },
         });
       }
     } finally {
@@ -67,10 +79,10 @@ export function AboutScreen() {
     : result?.status === 'latest'
       ? `已是最新版本 v${result.current}`
       : result?.status === 'available'
-        ? `有新版本 v${result.latest}，当前 v${result.current}`
+        ? `有新版本 v${result.latest.replace(/^[vV]/, '')}，当前 v${result.current}`
         : result?.status === 'error'
           ? result.message
-          : '从项目仓库读取最新版本';
+          : '从项目仓库下载最新安装包';
 
   return (
     <View style={styles.flex}>
@@ -112,7 +124,7 @@ export function AboutScreen() {
           icon="cloud-download-outline"
           title="检查更新"
           subtitle={updateHint}
-          value={result?.status === 'available' ? `v${result.latest}` : undefined}
+          value={result?.status === 'available' ? `v${result.latest.replace(/^[vV]/, '')}` : undefined}
           disabled={checking}
           chevron
           onPress={() => { void runCheck(); }}

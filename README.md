@@ -6,7 +6,7 @@ Android 与 iOS 应用，目前仅在 Android 上完成构建与验证。
 | | |
 | --- | --- |
 | 应用标识 | `sb.linux.mobile` |
-| 当前版本 | 0.1.2 |
+| 当前版本 | 0.1.3 |
 | 开源许可 | MIT |
 
 ## 功能
@@ -85,9 +85,9 @@ apksigner verify --print-certs android/app/build/outputs/apk/release/app-release
 
 ## 检查更新
 
-「关于项目」页读取项目仓库的最新版本并与当前版本比较：优先取 GitHub 的 latest release，
-没有 release 时回退读取默认分支 `app.json` 中的 `expo.version`。仓库地址配置在
-`src/data/app-info.ts` 的 `PROJECT_URL`。
+「关于项目」页读取项目仓库的最新版本并与当前版本比较：优先取 GitHub 的 latest release。
+有 APK 资源时直接在应用内下载并调起系统安装界面；没有 release 时回退读取默认分支
+`app.json` 中的 `expo.version`。仓库地址配置在 `src/data/app-info.ts` 的 `PROJECT_URL`。
 
 ## 项目结构
 

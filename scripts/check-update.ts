@@ -5,7 +5,7 @@
  * 这里守住三件事：主页地址能解析出 owner/repo、版本比较符合直觉、以及当前版本与仓库一致。
  */
 import { APP_VERSION, PROJECT_URL } from '../src/data/app-info';
-import { compareVersions, parseRepo, parseVersion } from '../src/services/app-update';
+import { compareVersions, formatApkSize, parseRepo, parseVersion, pickReleaseApk, updatePromptText } from '../src/services/app-update';
 
 let fails = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -37,7 +37,28 @@ check('补零后相等', compareVersions('0.1', '0.1.0') === 0);
 check('高位更大', compareVersions('0.2.0', APP_VERSION) > 0);
 check('按数值比而不是字符串', compareVersions('0.1.10', '0.1.9') > 0);
 check('低位更小', compareVersions('0.0.9', APP_VERSION) < 0);
-check('当前版本不比最新版大', compareVersions(APP_VERSION, APP_VERSION) === 0, APP_VERSION);
+check(
+  '从 release 资源里挑 APK',
+  pickReleaseApk([
+    { name: 'Source code', browser_download_url: 'https://github.com/x/zip' },
+    { name: 'linux-sb-0.1.2-release.apk', browser_download_url: 'https://github.com/x/app.apk', size: 28_000_000, content_type: 'application/vnd.android.package-archive' },
+  ])?.url === 'https://github.com/x/app.apk',
+);
+check('没有 APK 时返回空', pickReleaseApk([{ name: 'notes.md', browser_download_url: 'https://x' }]) === null);
+check('体积格式化', formatApkSize(28_311_457) === '27M', formatApkSize(28_311_457));
+check('空体积不显示', formatApkSize(0) === '');
+check(
+  '更新文案会写下载安装',
+  /下载安装包/.test(updatePromptText({
+    status: 'available',
+    current: '0.1.0',
+    latest: '0.1.2',
+    url: 'https://github.com/x',
+    notes: '修了外链',
+    apkUrl: 'https://github.com/x/app.apk',
+    apkSize: 28_000_000,
+  })),
+);
 
 console.log(fails ? `\n✗ 未通过：${fails} 项` : '\n✓ 通过：检查更新逻辑正常');
 process.exit(fails ? 1 : 0);

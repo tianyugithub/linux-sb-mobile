@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { guest, type Member, type Topic } from './data';
 import { InAppBrowser } from './src/components/InAppBrowser';
-import { Icon, ToastHost, pickUserId } from './src/components/ui';
+import { Icon, ToastHost, ConfirmDialog, pickUserId, type DialogState } from './src/components/ui';
 import { NavCtx, openAppHref, useAppInsets, type Extra, type Nav } from './src/navigation/nav';
 import { PrefsProvider, usePrefs } from './src/hooks/usePrefs';
 import { applyScheme, C } from './src/theme/palette';
@@ -18,6 +18,8 @@ import { cacheClear, cacheDelete, preloadQueryCache } from './src/services/query
 import { resetOfficialUploadCapability } from './src/services/r2-config';
 import { bustUnreadCount } from './src/services/live';
 import { classifyAppHref, resolveAppHref } from './src/utils/links';
+import { checkForUpdate, updatePromptText } from './src/services/app-update';
+import { downloadAndInstallUpdate, rememberSkippedUpdate, wasUpdateSkipped } from './src/services/app-install';
 import { hydrateTopicSeen } from './src/utils/topic-seen';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { CheckinScreen } from './src/screens/CheckinScreen';
@@ -89,6 +91,8 @@ function AppRoot() {
   const [checkedIn, setCheckedIn] = useState(false);
   const [unread, setUnread] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [updateDialog, setUpdateDialog] = useState<DialogState | null>(null);
+  const updateTagRef = useRef('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 启动流程（本地会话恢复）是否已完成：完成前不接受通知带来的页面跳转，保证冷启动先落首页。 */
   const bootedRef = useRef(false);
@@ -301,6 +305,38 @@ function AppRoot() {
       cancelled = true;
     };
   }, [refreshMe]);
+
+  useEffect(() => {
+    if (!sessionReady || Platform.OS !== 'android') return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void (async () => {
+        const next = await checkForUpdate();
+        if (cancelled || next.status !== 'available' || !next.apkUrl) return;
+        if (await wasUpdateSkipped(next.latest)) return;
+        if (cancelled) return;
+        updateTagRef.current = next.latest;
+        setUpdateDialog({
+          title: `发现新版本 v${next.latest.replace(/^[vV]/, '')}`,
+          text: updatePromptText(next),
+          confirmLabel: '下载安装',
+          onConfirm: async () => {
+            try {
+              await downloadAndInstallUpdate(next, (message) => showToastRef.current(message));
+            } catch (err) {
+              const message = err instanceof Error ? err.message : '下载失败';
+              if (message !== 'NEED_PERMISSION') showToastRef.current(message);
+              throw err;
+            }
+          },
+        });
+      })();
+    }, 1800);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [sessionReady]);
 
   const nav = useMemo<Nav>(() => {
     const next: Nav = {
@@ -624,6 +660,14 @@ function AppRoot() {
           <View style={{ height: insets.bottom, backgroundColor: C.canvas }} />
         ) : null}
         <ToastHost message={toast} offset={toastOffset} />
+        <ConfirmDialog
+          dialog={updateDialog}
+          onClose={() => {
+            const tag = updateTagRef.current;
+            setUpdateDialog(null);
+            if (tag) void rememberSkippedUpdate(tag);
+          }}
+        />
       </View>
     </NavCtx.Provider>
   );

@@ -3,15 +3,31 @@ import { APP_VERSION, PROJECT_URL } from '../data/app-info';
 /**
  * 检查更新。
  *
- * 版本来源就是项目仓库本身：优先读 GitHub 的 latest release，没有 release 就回退读
- * 默认分支上的 `app.json`（`expo.version`）—— 也就是本仓库里版本号唯一的那处。
- * 不引入任何依赖，不请求第三方服务；解析与比较是纯函数，能离线回归（`npm run check:update`）。
+ * 版本来源就是项目仓库本身：优先读 GitHub 的 latest release（含 APK 资源），
+ * 没有 release 就回退读默认分支上的 `app.json`。
+ * 解析、比较、挑选 APK 都是纯函数，能离线回归（`npm run check:update`）。
  */
 
 export type UpdateResult =
   | { status: 'latest'; current: string; latest: string }
-  | { status: 'available'; current: string; latest: string; url: string; notes: string }
+  | {
+      status: 'available';
+      current: string;
+      latest: string;
+      url: string;
+      notes: string;
+      apkUrl?: string;
+      apkName?: string;
+      apkSize?: number;
+    }
   | { status: 'error'; current: string; message: string };
+
+export type ReleaseAsset = {
+  name?: string;
+  browser_download_url?: string;
+  content_type?: string;
+  size?: number;
+};
 
 type RepoRef = { owner: string; repo: string };
 
@@ -51,7 +67,52 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-type RemoteVersion = { version: string; url: string; notes: string };
+export function pickReleaseApk(assets: ReleaseAsset[] | null | undefined): { url: string; name: string; size: number } | null {
+  const list = (assets ?? []).filter((item) => {
+    const name = String(item.name ?? '').toLowerCase();
+    const type = String(item.content_type ?? '').toLowerCase();
+    const url = String(item.browser_download_url ?? '').trim();
+    if (!url) return false;
+    return name.endsWith('.apk') || type.includes('android.package-archive');
+  });
+  const preferred = list.find((item) => /release\.apk$/i.test(String(item.name)))
+    || list.find((item) => /\.apk$/i.test(String(item.name)))
+    || list[0];
+  const url = String(preferred?.browser_download_url ?? '').trim();
+  if (!url) return null;
+  return {
+    url,
+    name: String(preferred?.name ?? 'update.apk'),
+    size: Number(preferred?.size ?? 0) || 0,
+  };
+}
+
+export function formatApkSize(bytes?: number): string {
+  const size = Number(bytes ?? 0);
+  if (!Number.isFinite(size) || size <= 0) return '';
+  const mb = size / (1024 * 1024);
+  const label = mb >= 10 ? String(Math.round(mb)) : mb.toFixed(1).replace(/\.0$/, '');
+  return `${label}M`;
+}
+
+export function updatePromptText(next: Extract<UpdateResult, { status: 'available' }>): string {
+  const notes = next.notes.replace(/\*\*/g, '').replace(/^---+$/gm, '').trim().slice(0, 240);
+  const size = formatApkSize(next.apkSize);
+  const pack = next.apkUrl
+    ? `将下载安装包${size ? `（${size}）` : ''}并打开系统安装界面。`
+    : '未找到安装包，将打开项目发布页。';
+  const lead = `当前版本 v${next.current}。${pack}`;
+  return notes ? `${notes}\n\n${lead}` : lead;
+}
+
+type RemoteVersion = {
+  version: string;
+  url: string;
+  notes: string;
+  apkUrl?: string;
+  apkName?: string;
+  apkSize?: number;
+};
 
 async function fetchRemoteVersion(ref: RepoRef): Promise<RemoteVersion | null> {
   const timeout = 8_000;
@@ -68,17 +129,26 @@ async function fetchRemoteVersion(ref: RepoRef): Promise<RemoteVersion | null> {
     }
   };
 
-  // ① 有 release 就按 release 走（能带上发布说明与发布页）
+  // ① 有 release 就按 release 走（能带上发布说明、发布页和 APK）
   try {
     const res = await withTimeout(`https://api.github.com/repos/${ref.owner}/${ref.repo}/releases/latest`);
     if (res.ok) {
-      const data = (await res.json()) as { tag_name?: string; html_url?: string; body?: string };
+      const data = (await res.json()) as {
+        tag_name?: string;
+        html_url?: string;
+        body?: string;
+        assets?: ReleaseAsset[];
+      };
       const version = String(data.tag_name ?? '').trim();
       if (version) {
+        const apk = pickReleaseApk(data.assets);
         return {
           version,
           url: data.html_url || `https://github.com/${ref.owner}/${ref.repo}/releases`,
           notes: String(data.body ?? '').trim(),
+          apkUrl: apk?.url,
+          apkName: apk?.name,
+          apkSize: apk?.size,
         };
       }
     }
@@ -121,6 +191,9 @@ export async function checkForUpdate(options: { force?: boolean } = {}): Promise
       latest: remote.version,
       url: remote.url,
       notes: remote.notes,
+      apkUrl: remote.apkUrl,
+      apkName: remote.apkName,
+      apkSize: remote.apkSize,
     };
     return memo;
   }

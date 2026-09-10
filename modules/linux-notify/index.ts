@@ -9,6 +9,9 @@ type LinuxNotifyNative = {
   stop(): boolean;
   isIgnoringBattery(): boolean;
   requestBattery(): boolean;
+  canInstallPackages(): boolean;
+  openInstallPermission(): boolean;
+  installApk(path: string): Promise<boolean>;
 };
 
 const Native = requireOptionalNativeModule<LinuxNotifyNative>('LinuxNotify');
@@ -41,4 +44,20 @@ export function isIgnoringBattery(): boolean {
 export function requestBatteryExemption(): boolean {
   if (Platform.OS !== 'android') return true;
   return Native?.requestBattery() ?? false;
+}
+
+export function canInstallPackages(): boolean {
+  if (Platform.OS !== 'android') return false;
+  return Native?.canInstallPackages() ?? false;
+}
+
+export function openInstallPermission(): boolean {
+  if (Platform.OS !== 'android') return false;
+  return Native?.openInstallPermission() ?? false;
+}
+
+export async function installApk(path: string): Promise<void> {
+  if (Platform.OS !== 'android') throw new Error('仅安卓可安装更新');
+  if (!Native?.installApk) throw new Error('当前安装包不支持应用内更新');
+  await Native.installApk(path);
 }

@@ -47,10 +47,15 @@ export class File {
   textSync() { return files.get(this.uri) ?? ''; }
   write(text) { files.set(this.uri, String(text)); }
   delete() { files.delete(this.uri); }
+  static async downloadFileAsync(_url, dest) { return dest; }
 }
 export const Paths = { document: { uri: 'file:///doc' }, cache: { uri: 'file:///cache' } };
 export default { File, Paths };`,
-  'linux-notify': 'export const syncNotifySession = () => undefined;\nexport default {};',
+  'linux-notify': `export const syncNotifySession = () => undefined;
+export const canInstallPackages = () => false;
+export const openInstallPermission = () => false;
+export const installApk = async () => true;
+export default {};`,
   '@react-native-cookies/cookies': 'export const get = async () => ({});\nexport const set = async () => true;\nexport default {};',
 };
 
