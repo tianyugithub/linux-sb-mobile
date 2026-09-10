@@ -28,6 +28,7 @@ object WebViewH3 {
   @JvmStatic
   fun intercept(request: WebResourceRequest): WebResourceResponse? {
     if (!H3.isEnabled()) return null
+    // 与 H3.shouldUse 保持一致：DoH / 直连接管，镜像通道保持原样。
     if (LinuxAccess.usingMirror()) return null
     val url = request.url ?: return null
     if (!"https".equals(url.scheme, ignoreCase = true)) return null

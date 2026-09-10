@@ -89,14 +89,14 @@ object H3 {
     .orEmpty()
 
   /**
-   * 只在 **DoH 通道** 且是 linux.sb 系域名时才用 QUIC。
+   * DoH 与直连通道下、且是 linux.sb 系域名时才用 QUIC。
    *
-   * 镜像通道的 SNI 是镜像域名、本来就不被封；直连通道保持原样（用户要求不做任何改动），
-   * 所以这两条路都不接管。
+   * 直连仍是「干净直连」：路由与域名一概不动（不改写、不经镜像），这里只多给一层传输，
+   * 失败照旧回落到原来的 TLS 分片路径。镜像通道不接管 —— 它的 SNI 是镜像域名，本来就不被封。
    */
   fun shouldUse(url: okhttp3.HttpUrl): Boolean {
     if (!enabled) return false
-    if (!LinuxAccess.usingDoh()) return false
+    if (LinuxAccess.usingMirror()) return false
     val host = url.host.lowercase()
     return host == "linux.sb" || host.endsWith(".linux.sb")
   }

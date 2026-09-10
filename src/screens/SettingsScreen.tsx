@@ -81,7 +81,7 @@ export function SettingsScreen() {
         title="HTTP/3 优先"
         subtitle={prefs.accessChannel === 'mirror'
           ? '镜像通道用不到；切到 DoH / 直连后生效'
-          : `DoH / 直连下先走 QUIC，失败自动回落${h3Last ? ` · 上次：${h3Last}` : ''}`}
+          : `站内请求先走 QUIC，失败自动回落${h3Last ? ` · 上次：${h3Last}` : ''}`}
         value={prefs.h3First ? '开启' : '关闭'}
         onPress={() => {
           void (async () => {
