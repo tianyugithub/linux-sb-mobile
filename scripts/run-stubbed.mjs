@@ -54,6 +54,7 @@ export default { File, Paths };`,
   'linux-notify': `export const syncNotifySession = () => undefined;
 export const canInstallPackages = () => false;
 export const openInstallPermission = () => false;
+export const downloadApk = async (url, dest) => dest;
 export const installApk = async () => true;
 export default {};`,
   '@react-native-cookies/cookies': 'export const get = async () => ({});\nexport const set = async () => true;\nexport default {};',

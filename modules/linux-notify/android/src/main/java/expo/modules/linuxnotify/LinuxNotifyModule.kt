@@ -7,10 +7,17 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import com.facebook.react.modules.network.OkHttpClientProvider
 import expo.modules.kotlin.exception.Exceptions
+import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 class LinuxNotifyModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -78,6 +85,39 @@ class LinuxNotifyModule : Module() {
       }
       activity.startActivity(intent)
       true
+    }
+
+    AsyncFunction("downloadApk") Coroutine { url: String, destPath: String ->
+      withContext(Dispatchers.IO) {
+        val dest = apkFile(destPath)
+        dest.parentFile?.mkdirs()
+        if (dest.exists()) dest.delete()
+        val client = try {
+          OkHttpClientProvider.getOkHttpClient().newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+        } catch (_: Exception) {
+          OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .build()
+        }
+        val request = Request.Builder().url(url.trim()).build()
+        client.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) throw Exception("下载失败 HTTP ${response.code}")
+          val body = response.body ?: throw Exception("安装包为空")
+          dest.outputStream().use { output -> body.byteStream().copyTo(output) }
+        }
+        if (!dest.exists() || dest.length() < 1024L * 1024L) {
+          dest.delete()
+          throw Exception("安装包不完整，请重试")
+        }
+        dest.toURI().toString()
+      }
     }
 
     AsyncFunction("installApk") { path: String ->

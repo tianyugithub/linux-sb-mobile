@@ -11,4 +11,9 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
+# 内置浏览器 DoH 代理 / DNS
+-keep class sb.linux.mobile.DohDns { *; }
+-keep class sb.linux.mobile.WebDnsProxy { *; }
+-keep class sb.linux.mobile.GithubAssets { *; }
+
 # Add any project specific keep options here:

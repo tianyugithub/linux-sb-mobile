@@ -6,6 +6,7 @@
  */
 import { APP_VERSION, PROJECT_URL } from '../src/data/app-info';
 import { compareVersions, formatApkSize, parseRepo, parseVersion, pickReleaseApk, updatePromptText } from '../src/services/app-update';
+import { githubAccessUrls, githubBrowseUrl, isGithubUrl } from '../src/utils/github-access';
 
 let fails = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -59,6 +60,23 @@ check(
     apkSize: 28_000_000,
   })),
 );
+
+/* ── 国内访问 GitHub：直连 + 镜像 ─────────────────────────────── */
+const apkUrl = 'https://github.com/tianyugithub/linux-sb-mobile/releases/download/v0.1.3/linux-sb-0.1.3-release.apk';
+const apkMirrors = githubAccessUrls(apkUrl);
+check('识别 GitHub 地址', isGithubUrl(apkUrl) && isGithubUrl('https://api.github.com/repos/a/b'));
+check('linux.sb 不走 GitHub 镜像', githubAccessUrls('https://linux.sb/wallet')[0] === 'https://linux.sb/wallet' && githubAccessUrls('https://linux.sb/wallet').length === 1);
+check('安装包候选含直连', apkMirrors.includes(apkUrl));
+check('安装包优先走 gh-proxy', apkMirrors[0] === `https://gh-proxy.com/${apkUrl}`);
+check('安装包候选含 ghfast', apkMirrors.some((item) => item.startsWith('https://ghfast.top/https://github.com/')));
+check(
+  'raw 回退 jsDelivr',
+  githubAccessUrls('https://raw.githubusercontent.com/tianyugithub/linux-sb-mobile/main/app.json').includes(
+    'https://cdn.jsdelivr.net/gh/tianyugithub/linux-sb-mobile@main/app.json',
+  ),
+);
+check('仓库页仍开 github.com', githubBrowseUrl(PROJECT_URL) === PROJECT_URL);
+check('非 GitHub 浏览地址不变', githubBrowseUrl('https://linux.sb/') === 'https://linux.sb/');
 
 console.log(fails ? `\n✗ 未通过：${fails} 项` : '\n✓ 通过：检查更新逻辑正常');
 process.exit(fails ? 1 : 0);

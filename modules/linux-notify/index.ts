@@ -11,6 +11,7 @@ type LinuxNotifyNative = {
   requestBattery(): boolean;
   canInstallPackages(): boolean;
   openInstallPermission(): boolean;
+  downloadApk(url: string, destPath: string): Promise<string>;
   installApk(path: string): Promise<boolean>;
 };
 
@@ -54,6 +55,12 @@ export function canInstallPackages(): boolean {
 export function openInstallPermission(): boolean {
   if (Platform.OS !== 'android') return false;
   return Native?.openInstallPermission() ?? false;
+}
+
+export async function downloadApk(url: string, destPath: string): Promise<string> {
+  if (Platform.OS !== 'android') throw new Error('仅安卓可直接安装更新');
+  if (!Native?.downloadApk) throw new Error('当前安装包不支持应用内更新');
+  return Native.downloadApk(url, destPath);
 }
 
 export async function installApk(path: string): Promise<void> {

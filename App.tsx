@@ -18,6 +18,7 @@ import { cacheClear, cacheDelete, preloadQueryCache } from './src/services/query
 import { resetOfficialUploadCapability } from './src/services/r2-config';
 import { bustUnreadCount } from './src/services/live';
 import { classifyAppHref, resolveAppHref } from './src/utils/links';
+import { githubBrowseUrl } from './src/utils/github-access';
 import { checkForUpdate, updatePromptText } from './src/services/app-update';
 import { downloadAndInstallUpdate, rememberSkippedUpdate, wasUpdateSkipped } from './src/services/app-install';
 import { hydrateTopicSeen } from './src/utils/topic-seen';
@@ -388,7 +389,7 @@ function AppRoot() {
       });
     },
     openWeb: (url, title) => {
-      const abs = resolveAppHref(url) ?? url;
+      const abs = githubBrowseUrl(resolveAppHref(url) ?? url);
       setStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;
@@ -401,7 +402,7 @@ function AppRoot() {
         openAppHref(next, url);
         return;
       }
-      const abs = action.type === 'browser' ? action.url : (resolveAppHref(url) ?? url);
+      const abs = githubBrowseUrl(action.type === 'browser' ? action.url : (resolveAppHref(url) ?? url));
       setStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;

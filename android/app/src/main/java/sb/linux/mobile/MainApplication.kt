@@ -16,6 +16,8 @@ import com.facebook.react.defaults.DefaultReactNativeHost
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ReactNativeHostWrapper
 
+import com.facebook.react.modules.network.OkHttpClientProvider
+
 class MainApplication : Application(), ReactApplication {
 
   override val reactNativeHost: ReactNativeHost = ReactNativeHostWrapper(
@@ -39,6 +41,13 @@ class MainApplication : Application(), ReactApplication {
     get() = ReactNativeHostWrapper.createReactHost(applicationContext, reactNativeHost)
 
   override fun onCreate() {
+    val dns = DohDns.instance
+    OkHttpClientProvider.setOkHttpClientFactory {
+      OkHttpClientProvider.createClientBuilder(this)
+        .dns(dns)
+        .build()
+    }
+    WebDnsProxy.start(dns)
     super.onCreate()
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())

@@ -225,7 +225,7 @@ function MineBody(props: MineActions) {
             <Cell title="登录账号" isLink center onClick={props.onLogin} />
           )}
         </View>
-        <Text style={styles.version}>LINUX SB · v0.1.3</Text>
+        <Text style={styles.version}>LINUX SB · v0.1.4</Text>
       </View>
     </ScrollView>
   );

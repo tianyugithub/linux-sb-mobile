@@ -1,4 +1,5 @@
 import { APP_VERSION, PROJECT_URL } from '../data/app-info';
+import { fetchGithub } from '../utils/github-access';
 
 /**
  * 检查更新。
@@ -115,23 +116,11 @@ type RemoteVersion = {
 };
 
 async function fetchRemoteVersion(ref: RepoRef): Promise<RemoteVersion | null> {
-  const timeout = 8_000;
-  const withTimeout = async (url: string): Promise<Response> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      return await fetch(url, {
-        signal: controller.signal,
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-
   // ① 有 release 就按 release 走（能带上发布说明、发布页和 APK）
   try {
-    const res = await withTimeout(`https://api.github.com/repos/${ref.owner}/${ref.repo}/releases/latest`);
+    const res = await fetchGithub(`https://api.github.com/repos/${ref.owner}/${ref.repo}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
     if (res.ok) {
       const data = (await res.json()) as {
         tag_name?: string;
@@ -158,7 +147,7 @@ async function fetchRemoteVersion(ref: RepoRef): Promise<RemoteVersion | null> {
 
   // ② 没发过 release：读默认分支上的 app.json（版本号在仓库里只写这一处）
   try {
-    const res = await withTimeout(`https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/main/app.json`);
+    const res = await fetchGithub(`https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/main/app.json`);
     if (!res.ok) return null;
     const data = (await res.json()) as { expo?: { version?: string } };
     const version = String(data.expo?.version ?? '').trim();

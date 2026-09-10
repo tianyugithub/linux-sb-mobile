@@ -15,9 +15,13 @@ import android.os.SystemClock
 import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.facebook.react.modules.network.OkHttpClientProvider
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 object NotifyPoller {
@@ -136,28 +140,58 @@ object NotifyPoller {
       "$ORIGIN/notification_live_badge_status" to "application/json",
       "$ORIGIN/" to "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
     )
+    val client = notifyClient()
     for ((url, accept) in endpoints) {
       try {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 8_000
-        conn.readTimeout = 8_000
-        conn.instanceFollowRedirects = true
-        conn.requestMethod = "GET"
-        conn.setRequestProperty("Cookie", cookie)
-        conn.setRequestProperty("User-Agent", UA)
-        conn.setRequestProperty("Accept", accept)
-        conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
-        conn.setRequestProperty("Referer", "$ORIGIN/")
-        conn.setRequestProperty("X-Requested-With", "XMLHttpRequest")
-        val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-        val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        conn.disconnect()
+        val body = if (client != null) {
+          val request = Request.Builder()
+            .url(url)
+            .header("Cookie", cookie)
+            .header("User-Agent", UA)
+            .header("Accept", accept)
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .header("Referer", "$ORIGIN/")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .build()
+          client.newCall(request).execute().use { response ->
+            response.body?.string().orEmpty()
+          }
+        } else {
+          val conn = URL(url).openConnection() as HttpURLConnection
+          conn.connectTimeout = 8_000
+          conn.readTimeout = 8_000
+          conn.instanceFollowRedirects = true
+          conn.requestMethod = "GET"
+          conn.setRequestProperty("Cookie", cookie)
+          conn.setRequestProperty("User-Agent", UA)
+          conn.setRequestProperty("Accept", accept)
+          conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+          conn.setRequestProperty("Referer", "$ORIGIN/")
+          conn.setRequestProperty("X-Requested-With", "XMLHttpRequest")
+          val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+          val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+          conn.disconnect()
+          text
+        }
         parseUnread(body)?.let { return it }
       } catch (_: Exception) {
         /* try next endpoint */
       }
     }
     return null
+  }
+
+  private fun notifyClient(): OkHttpClient? {
+    return try {
+      OkHttpClientProvider.getOkHttpClient().newBuilder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+    } catch (_: Exception) {
+      null
+    }
   }
 
   private fun parseUnread(body: String): Int? {

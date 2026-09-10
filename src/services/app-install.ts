@@ -3,10 +3,12 @@ import { File, Paths } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import {
   canInstallPackages,
+  downloadApk,
   installApk,
   openInstallPermission,
 } from 'linux-notify';
 import type { UpdateResult } from './app-update';
+import { githubAccessUrls } from '../utils/github-access';
 
 const SKIP_KEY = 'lsb.update.skip';
 
@@ -63,10 +65,17 @@ export async function downloadAndInstallUpdate(
   }
   onToast('正在下载安装包…');
   const dest = new File(Paths.cache, apkFileName(next.latest));
-  const file = await File.downloadFileAsync(next.apkUrl, dest, { idempotent: true });
-  const path = file?.uri || dest.uri;
-  if (!path) throw new Error('安装包下载失败');
-  await installApk(path);
+  let lastError = '安装包下载失败';
+  for (const url of githubAccessUrls(next.apkUrl)) {
+    try {
+      const path = await downloadApk(url, dest.uri);
+      await installApk(path);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : lastError;
+    }
+  }
+  throw new Error(lastError);
 }
 
 export const NEED_PERMISSION = 'NEED_PERMISSION';
