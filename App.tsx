@@ -365,7 +365,7 @@ function AppRoot() {
         openAppHref(next, url);
         return;
       }
-      const abs = resolveAppHref(url) ?? url;
+      const abs = action.type === 'browser' ? action.url : (resolveAppHref(url) ?? url);
       setStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;

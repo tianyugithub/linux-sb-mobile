@@ -1,6 +1,6 @@
 {
   "name": "linux-sb-mobile",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "main": "expo/AppEntry.js",
   "scripts": {
@@ -24,7 +24,8 @@
     "check:update": "node scripts/run-stubbed.mjs scripts/check-update.ts",
     "check:captcha": "node scripts/run-stubbed.mjs scripts/check-captcha.ts",
     "check:helper": "npx tsx scripts/check-helper.ts",
-    "check:code": "npx tsx scripts/check-code.ts"
+    "check:code": "npx tsx scripts/check-code.ts",
+    "check:links": "node scripts/run-stubbed.mjs scripts/check-links.ts"
   },
   "dependencies": {
     "@nutui/nutui-react-native": "0.0.8",

@@ -143,7 +143,8 @@ function trimUrl(raw: string): string {
 }
 
 function attrOf(tag: string, name: string): string {
-  return tag.match(new RegExp(`${name}=["']([^"']+)["']`))?.[1] ?? '';
+  const raw = tag.match(new RegExp(`${name}=["']([^"']+)["']`))?.[1] ?? '';
+  return decodeEntities(raw);
 }
 
 function textAlignOf(tag: string): TextAlign | undefined {
@@ -958,8 +959,9 @@ export function htmlToSource(raw: string): string {
       })
       .replace(/<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
         const text = decodeEntities(String(label).replace(/<[^>]+>/g, '')).trim();
+        const url = decodeEntities(String(href ?? '').trim());
         if (!text) return '';
-        return text !== href ? `[${text}](${href})` : href;
+        return text !== url ? `[${text}](${url})` : url;
       })
       .replace(/<\/(p|div|h[1-6]|li|blockquote)>/gi, '\n\n')
       .replace(/<br\s*\/?>/gi, '\n')

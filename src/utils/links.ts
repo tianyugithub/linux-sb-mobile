@@ -1,13 +1,37 @@
 import { LINUX_ORIGIN } from '../services/live';
+import { decodeEntities } from './entities';
 
 export function resolveAppHref(href: string): string | null {
-  const trimmed = href.trim();
+  const trimmed = decodeEntities(href.trim());
   if (!trimmed || /^javascript:/i.test(trimmed)) return null;
   if (/^(mailto|tel):/i.test(trimmed)) return trimmed;
   if (trimmed.startsWith('//')) return `https:${trimmed}`;
   if (trimmed.startsWith('/')) return `${LINUX_ORIGIN}${trimmed}`;
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return null;
+}
+
+/**
+ * 官网把站外链接写成 `/jump?to=<url>&sig=…`。HTML 属性里是 `&amp;sig=`，
+ * 原样打开会变成 `amp;sig` 参数，官方回 400「跳转地址无效」。
+ * App 里直接打开 `to` 指向的地址，跳过中间页。
+ */
+export function unwrapLinuxJump(url: string): string {
+  let current = url;
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const next = new URL(current);
+      if (!isLinuxUrl(current)) return current;
+      const path = next.pathname.replace(/\/+$/, '') || '/';
+      if (path !== '/jump') return current;
+      const to = String(next.searchParams.get('to') ?? '').trim();
+      if (!/^https?:\/\//i.test(to)) return current;
+      current = to;
+    } catch {
+      return current;
+    }
+  }
+  return current;
 }
 
 export function isHttpUrl(url: string): boolean {
@@ -57,8 +81,9 @@ function linuxHomeSort(pathname: string): string | null {
 }
 
 export function classifyAppHref(href: string): AppHrefAction {
-  const abs = resolveAppHref(href);
-  if (!abs) return { type: 'ignore' };
+  const resolved = resolveAppHref(href);
+  if (!resolved) return { type: 'ignore' };
+  const abs = unwrapLinuxJump(resolved);
   try {
     const next = new URL(abs);
     if (isLinuxUrl(abs)) {
