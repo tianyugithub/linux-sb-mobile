@@ -120,6 +120,7 @@ export function mapUser(dto: UserDto): Member {
     topicCount: dto.topicCount,
     replyCount: dto.replyCount,
     joined: dto.joinedAt ? dto.joinedAt.slice(0, 7) : '',
+    online: dto.online,
   };
 }
 

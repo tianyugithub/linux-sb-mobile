@@ -2076,6 +2076,8 @@ export function parseUser(html: string, id: string): UserDto {
   );
   const title = gachaTitleLabel(html) || '饼友';
   const groupLabel = decode(first(html, /class="user-uid-badge-group-name">([^<]+)/) || '饼友');
+  // 在线状态来自页面上的在线用户 id 列表（没有该列表时沿用最近一次见到的）
+  const onlineIds = rememberOnlineUserIds(html);
   const points = parseAccountPoints(html);
   const uid = html.match(/UID\s*(\d+)/)?.[1] ?? id;
   const bio = first(html, /class="sidebar-bio">([\s\S]*?)<\/div>/) || '';
@@ -2100,6 +2102,7 @@ export function parseUser(html: string, id: string): UserDto {
     topicCount,
     replyCount: 0,
     joinedAt: '',
+    online: userIsOnline(uid || id, onlineIds),
   };
 }
 

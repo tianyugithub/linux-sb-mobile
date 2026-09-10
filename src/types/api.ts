@@ -77,6 +77,8 @@ export type UserDto = {
   topicCount: number;
   replyCount: number;
   joinedAt: string;
+  /** 是否在线：来自官网页面上的在线用户 id 列表。 */
+  online?: boolean;
 };
 
 export type SessionDto = {

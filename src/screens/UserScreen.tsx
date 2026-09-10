@@ -57,7 +57,7 @@ export function UserScreen({ member }: { member: Member }) {
           <>
             <View style={styles.userHero}>
               <View style={styles.userIdentity}>
-                <UserAvatar name={current.name} url={current.avatarUrl} accent={current.accent} size={64} radius={32} />
+                <UserAvatar name={current.name} url={current.avatarUrl} accent={current.accent} size={64} radius={32} online={Boolean(current.online)} dotRing={C.surface} />
                 <View style={styles.userIdentityText}>
                   <Text numberOfLines={1} style={styles.userName}>{current.name}</Text>
                   <TitleBadges title={current.title} groupLabel={current.groupLabel} size="md" onPress={() => nav.open({ name: 'titles', tab: '称号抽取' })} />

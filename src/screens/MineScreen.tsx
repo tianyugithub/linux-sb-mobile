@@ -1,14 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useState } from 'react';
-import { Image, ImageBackground, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ImageBackground, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Cell, ConfigProvider, Grid, GridItem } from '@nutui/nutui-react-native';
 import type { Member } from '../../data';
 import type { IonName } from '../../data';
 import { TitleBadges } from '../components/TitleBadge';
-import { mediaUrl } from '../services/client';
-import { SvgAvatar } from '../components/ui';
-import { firstGlyph } from '../utils/entities';
+import { UserAvatar } from '../components/ui';
 import { C, registerStyleSync, type Palette } from '../theme/palette';
 import { nutThemeFor } from '../theme/nut-mine';
 
@@ -39,39 +37,6 @@ type MineActions = {
   refreshing?: boolean;
   onRefresh?: () => void | Promise<void>;
 };
-
-function HeroAvatar({ name, url, accent }: { name: string; url?: string; accent: string }) {
-  const [failed, setFailed] = useState(false);
-  const src = mediaUrl(url);
-  useEffect(() => {
-    setFailed(false);
-  }, [src]);
-  const letter = firstGlyph(name, '访');
-  // 站内默认头像是 SVG，Image 解码不了，需要用 react-native-svg。
-  const isSvg = Boolean(src) && /\.svg(\?|$)/i.test(src as string);
-  return (
-    <View style={styles.avatarRing}>
-      <View style={[styles.avatarFill, { backgroundColor: accent }]}>
-        {src && !failed ? (
-          isSvg ? (
-            <SvgAvatar uri={src as string} size={60} onError={() => setFailed(true)} />
-          ) : Platform.OS === 'web' ? (
-            React.createElement('img', {
-              src,
-              alt: '',
-              onError: () => setFailed(true),
-              style: { width: 60, height: 60, borderRadius: 30, display: 'block', objectFit: 'cover' },
-            })
-          ) : (
-            <Image source={{ uri: src }} style={styles.avatarImage} onError={() => setFailed(true)} />
-          )
-        ) : (
-          <Text style={styles.avatarLetter}>{letter}</Text>
-        )}
-      </View>
-    </View>
-  );
-}
 
 const GLYPH_TONE = {
   gold: { dark: { bg: '#3D2A12', fg: '#F5A623' }, light: { bg: '#FFF4E0', fg: '#C47B12' } },
@@ -144,7 +109,18 @@ function MineBody(props: MineActions) {
         <View style={styles.heroTop}>
           <View style={styles.identity}>
             <Pressable onPress={loggedIn ? props.onUser : props.onLogin} hitSlop={6}>
-              <HeroAvatar name={me.name} url={me.avatarUrl} accent={loggedIn ? me.accent : '#2B2B2B'} />
+              {/* 头像复用共用组件：站内默认头像是 SVG，组件内部已经处理；登录后带在线圆点 */}
+              <View style={styles.avatarRing}>
+                <UserAvatar
+                  name={me.name}
+                  url={me.avatarUrl}
+                  accent={loggedIn ? me.accent : '#2B2B2B'}
+                  size={60}
+                  radius={30}
+                  online={loggedIn}
+                  dotRing="rgba(255,255,255,0.9)"
+                />
+              </View>
             </Pressable>
             <View style={styles.identityText}>
               <Pressable onPress={loggedIn ? props.onUser : props.onLogin} style={styles.nameRow} hitSlop={6}>

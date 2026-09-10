@@ -89,17 +89,6 @@ export function SettingsScreen() {
         onPress={() => nav.open({ name: 'image-host' })}
       />
       <SettingsRow
-        icon="ban-outline"
-        title="屏蔽推广贴"
-        subtitle="首页与搜索隐藏「我要推广」"
-        value={prefs.blockPromo ? '已开启' : '已关闭'}
-        onPress={async () => {
-          const next = !prefs.blockPromo;
-          await prefs.setBlockPromo(next);
-          nav.toast(next ? '已屏蔽推广贴' : '已显示推广贴');
-        }}
-      />
-      <SettingsRow
         icon="funnel-outline"
         title="帖子列表屏蔽设置"
         subtitle="按关键词、用户名或版块隐藏帖子，规则同步到 linux.sb 账号"

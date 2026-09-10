@@ -178,6 +178,7 @@ export function UserAvatar({
   size = 34,
   radius,
   online,
+  dotRing,
 }: {
   name: string;
   url?: string;
@@ -185,6 +186,8 @@ export function UserAvatar({
   size?: number;
   radius?: number;
   online?: boolean;
+  /** 在线圆点的描边色：默认页面底色；头像坐在卡片/浅色底上时传所在背景色，圆点才不会像贴了白边。 */
+  dotRing?: string;
 }) {
   const [failed, setFailed] = useState(false);
   const src = mediaUrl(url);
@@ -197,6 +200,15 @@ export function UserAvatar({
   // 站内默认头像是 SVG，RN 的 Image 解码不了，必须用 react-native-svg 渲染。
   const isSvg = Boolean(src) && /\.svg(\?|$)/i.test(src as string);
   const dot = size >= 40 ? 12 : 10;
+  /**
+   * 在线圆点的位置。
+   *
+   * 圆形头像（radius = size/2）不能按方框右下角摆：方框的角在圆外，尺寸一大圆点就看着
+   * 浮在头像外面、压着描边（「我的」和用户中心都是 60/64px 的圆，就是这个毛病）。
+   * 圆形时把圆心放在圆周 45° 处（0.146·size ≈ 半径 − 半径/√2），圆角方形仍贴方角。
+   */
+  const circular = r >= size / 2 - 0.5;
+  const dotInset = circular ? Math.round(size * 0.146 - dot / 2) : -1;
   return (
     <View style={[styles.avatarWrap, { width: size, height: size }]}>
       <View style={[styles.avatar, { width: size, height: size, borderRadius: r, backgroundColor: accent }]}>
@@ -212,7 +224,21 @@ export function UserAvatar({
           <Text style={[styles.avatarText, size >= 50 && styles.profileAvatarText]}>{letter}</Text>
         )}
       </View>
-      {online ? <View style={[styles.online, { width: dot, height: dot, borderRadius: dot / 2 }]} /> : null}
+      {online ? (
+        <View
+          style={[
+            styles.online,
+            {
+              width: dot,
+              height: dot,
+              borderRadius: dot / 2,
+              bottom: dotInset,
+              right: dotInset,
+              borderColor: dotRing ?? C.canvas,
+            },
+          ]}
+        />
+      ) : null}
     </View>
   );
 }

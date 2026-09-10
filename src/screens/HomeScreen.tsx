@@ -40,7 +40,7 @@ export function Header({ onSearch, onProfile }: { onSearch: () => void; onProfil
           accessibilityLabel={unread > 0 ? `${unread} 条未读通知` : '我的'}
           style={[styles.profileDot, nav.loggedIn && { backgroundColor: nav.me.accent }]}
         >
-          {nav.loggedIn ? <UserAvatar name={nav.me.name} url={nav.me.avatarUrl} accent={nav.me.accent} size={28} radius={14} /> : <Icon name="person-outline" size={16} color={C.muted} />}
+          {nav.loggedIn ? <UserAvatar name={nav.me.name} url={nav.me.avatarUrl} accent={nav.me.accent} size={28} radius={14} online /> : <Icon name="person-outline" size={16} color={C.muted} />}
           {unread > 0 ? (
             <View style={styles.profileBadge}>
               <Text style={styles.profileBadgeText}>{unread > 99 ? '99+' : String(unread)}</Text>
