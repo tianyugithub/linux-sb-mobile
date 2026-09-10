@@ -49,6 +49,59 @@ function writeLocal(key: string, value: string | null) {
   nativeSet(key, value);
 }
 
+const hasSessionCookie = (jar: string | null | undefined) => /(^|;\s*)bbs_auth=/.test(jar ?? '');
+
+/** 最近一次写入的 cookie jar，用来判断「这次要写的会不会把登录态写没了」。 */
+let lastCookies: string | null = null;
+
+/**
+ * 写入 cookie jar，并挡住「用游客 jar 覆盖登录态」。
+ *
+ * 实测过的事故：`persistSite` 在找不到当前 token 的会话时会退而取快照里的最后一条，
+ * 那条可能是游客会话（不含 `bbs_auth`），一写就把登录 cookie 抹了 —— 表现就是
+ * 「什么都没干，重进就退出登录」。这里做一道保底：新 jar 不含 `bbs_auth` 而旧的有，
+ * 就把旧的会话 cookie 接回去。真正的退出走 clearSession（写 null），不受此限。
+ */
+function writeCookies(next: string) {
+  const apply = (value: string) => {
+    lastCookies = value;
+    writeLocal(COOKIE_KEY, value);
+    void writeLinuxCookies(value);
+  };
+  if (hasSessionCookie(next)) {
+    apply(next);
+    return;
+  }
+  if (lastCookies !== null) {
+    if (!hasSessionCookie(lastCookies)) {
+      apply(next);
+      return;
+    }
+    console.warn('[session] 新 jar 不含 bbs_auth，保留原会话 cookie');
+    apply(mergeSessionCookie(next, lastCookies));
+    return;
+  }
+  void nativeGet(COOKIE_KEY).then((previous) => {
+    if (previous && hasSessionCookie(previous)) {
+      console.warn('[session] 新 jar 不含 bbs_auth（冷启动），保留原会话 cookie');
+      apply(mergeSessionCookie(next, previous));
+      return;
+    }
+    apply(next);
+  }).catch(() => apply(next));
+}
+
+/** 把旧 jar 里的 bbs_auth 接回新 jar。 */
+function mergeSessionCookie(next: string, previous: string): string {
+  const auth = previous
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith('bbs_auth='));
+  if (!auth) return next;
+  const base = next.replace(/;\s*$/, '').trim();
+  return base ? `${base}; ${auth}` : auth;
+}
+
 function persistSite(snapshot: SiteSessionSnapshot) {
   const token = memory.token;
   const record = (token && snapshot.sessions[token]) || Object.values(snapshot.sessions).at(-1);
@@ -60,11 +113,10 @@ function persistSite(snapshot: SiteSessionSnapshot) {
   console.warn(
     '[session] 保存会话',
     `len=${record.cookies.length}`,
-    `bbs_auth=${/(^|;\s*)bbs_auth=/.test(record.cookies) ? 'yes' : 'no'}`,
+    `bbs_auth=${hasSessionCookie(record.cookies) ? 'yes' : 'no'}`,
   );
-  writeLocal(COOKIE_KEY, record.cookies);
+  writeCookies(record.cookies);
   writeLocal(USER_KEY, JSON.stringify(record.user));
-  void writeLinuxCookies(record.cookies);
 }
 
 export async function hydrateSession(): Promise<void> {

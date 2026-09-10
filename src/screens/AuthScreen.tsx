@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { CaptchaWidget } from '../components/CaptchaWidget';
 import { OAuthBrowser } from '../components/OAuthBrowser';
@@ -72,6 +72,13 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
       setRemember(true);
     });
   }, [isRegister]);
+
+  /*
+   * 这里原来有一段「自动登录」：进入登录页时若本机还留着站内 cookie，就拿它们直接登录。
+   * 实测有害：残留的 cookie 往往已失效，自动登录会"成功"一次、随后又被判为未登录并弹回本页，
+   * 形成来回跳转（人机验证组件被反复重挂，看起来就是"卡在正在加载人机验证"）。
+   * 用户明确要求不要自动登录，去掉；正常登录走下面的手动提交。
+   */
 
   useEffect(() => {
     if (codeWait <= 0) return;
@@ -193,6 +200,7 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
           <>
             <Pressable onPress={() => nav.openWeb('https://linux.sb/password_recovery_forgot', '忘记密码')}><Text style={styles.forgot}>忘记密码？</Text></Pressable>
             <Text style={styles.oauthLabel}>OAuth 登录</Text>
+            <Text style={styles.rulesText}>登录写在 linux.sb 上。授权页仍是 Google / GitHub，回来后会自动进入。</Text>
             <View style={styles.oauthRow}>
               <GhostButton flex icon="logo-github" label="GitHub" onPress={() => setOauth('github')} />
               <GhostButton flex icon="logo-google" label="Google" onPress={() => setOauth('google')} />
