@@ -72,6 +72,14 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
     ? composerQuery.data.forums.map((item) => item.name)
     : (selectedForum ? [selectedForum] : []);
   const editing = Boolean(edit);
+  /**
+   * 发帖须知是否已满足：确认过、或在设置/弹窗里选了「不再提示」。
+   *
+   * 「不再提示」必须和「已确认」等价 —— 它同时决定了弹窗显不显示。曾经只让弹窗看这个开关、
+   * 却让发布按钮等 `noticeConfirmed`，于是勾过「不再提示」（设置里也能开）之后：弹窗永远不出现，
+   * `noticeConfirmed` 永远没人置真，**发布按钮永久灰着而且没有任何入口能解开**。
+   */
+  const noticeSatisfied = editing || noticeConfirmed || prefs.postingNoticeSkip;
 
   // 草稿：进页面时预取（异步），只填用户还没动过的字段；之后每次改动自动保存。
   useEffect(() => {
@@ -180,8 +188,8 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
       <ScreenHeader
         title={editing ? '编辑主题' : '发布主题'}
         onBack={onBack}
-        right={<PrimaryButton compact disabled={busy || composerQuery.loading || (!editing && !noticeConfirmed)} label={busy ? (editing ? '保存中' : '发布中') : (editing ? '保存' : '发布')} onPress={async () => {
-        if (!editing && !noticeConfirmed) return;
+        right={<PrimaryButton compact disabled={busy || composerQuery.loading || !noticeSatisfied} label={busy ? (editing ? '保存中' : '发布中') : composerQuery.loading ? '加载中' : (editing ? '保存' : '发布')} onPress={async () => {
+        if (!noticeSatisfied) return;
         setBusy(true);
         setError('');
         try {
@@ -265,7 +273,7 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
       <ConfirmDialog dialog={dialog} onClose={() => setDialog(null)} />
       {!editing ? (
         <PostingNoticeDialog
-          visible={!noticeConfirmed && !prefs.postingNoticeSkip}
+          visible={!noticeSatisfied}
           content={noticeContent}
           skip={skipNotice}
           onToggleSkip={setSkipNotice}
