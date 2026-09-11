@@ -1,4 +1,5 @@
 import type { SessionDto, UserDto } from '../types/api';
+import { keepAuthCookie } from './session-keep';
 
 export type UpstreamSession = {
   cookies: string;
@@ -100,7 +101,8 @@ export function updateUpstreamUser(token: string, user: UserDto): void {
 export function updateUpstreamCookies(token: string, cookies: string): void {
   const record = byAccess.get(token);
   if (record) {
-    record.cookies = cookies;
+    // 游客页 / CDN 的 Set-Cookie 经常不含 bbs_auth，不能让内存 jar 先变成游客。
+    record.cookies = keepAuthCookie(cookies, record.cookies);
     persist();
   }
 }

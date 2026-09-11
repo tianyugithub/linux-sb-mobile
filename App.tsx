@@ -239,9 +239,9 @@ function AppRoot() {
         updateUpstreamUser(token, { ...session.user, ...user, points: livePoints });
       }
     } catch (error) {
-      // 上游会话真的失效了（网站退出 / cookie 过期）：本地快照不能让人以为还登着
+      // 上游会话真的失效了（两页都确认游客）：本地快照不能让人以为还登着
       if (error instanceof ApiError && error.status === 401) {
-        setMe(guest);
+        if (!sessionForToken(getAccessToken())) setMe(guest);
         return;
       }
       /* 其余情况保留当前快照 */

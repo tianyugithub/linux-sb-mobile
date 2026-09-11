@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import type { UserDto } from '../types/api';
 import { secureDelete, secureGet, secureSet } from './secure-value';
 import {
   getSiteSessionSnapshot,
@@ -7,6 +8,12 @@ import {
   type SiteSessionSnapshot,
 } from './site-session';
 import { writeLinuxCookies } from '../utils/site-cookies';
+import {
+  hasBbsAuth,
+  keepAuthCookie,
+  pickPersistRecord,
+  shouldClearSessionOnRefreshFailure,
+} from './session-keep';
 
 const TOKEN_KEY = 'lsb.access';
 const REFRESH_KEY = 'lsb.refresh';
@@ -72,7 +79,38 @@ function writeLocal(key: string, value: string | null) {
   void nativeSet(key, value);
 }
 
-const hasSessionCookie = (jar: string | null | undefined) => /(^|;\s*)bbs_auth=/.test(jar ?? '');
+const hasSessionCookie = hasBbsAuth;
+
+const PLACEHOLDER_USER: UserDto = {
+  id: 'local',
+  name: '饼友',
+  title: '饼友',
+  group: '饼友',
+  groupLabel: '饼友',
+  points: 0,
+  uid: '-',
+  avatar: 'P',
+  accent: '#222A38',
+  bio: '',
+  topicCount: 0,
+  replyCount: 0,
+  joinedAt: '',
+};
+
+function mintLocalToken(prefix: 'lsb' | 'lsr'): string {
+  return `${prefix}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function parseStoredUser(raw: string | null): UserDto | null {
+  if (!raw) return null;
+  try {
+    const user = JSON.parse(raw) as UserDto;
+    if (user && typeof user === 'object' && user.id && user.id !== '0') return user;
+  } catch {
+    /* 坏 JSON 当没有 */
+  }
+  return null;
+}
 
 /** 最近一次写入的 cookie jar，用来判断「这次要写的会不会把登录态写没了」。 */
 let lastCookies: string | null = null;
@@ -134,24 +172,16 @@ function writeCookies(next: string) {
   }).catch(() => apply(next));
 }
 
-/** 把旧 jar 里的 bbs_auth 接回新 jar。 */
 function mergeSessionCookie(next: string, previous: string): string {
-  const auth = previous
-    .split(';')
-    .map((item) => item.trim())
-    .find((item) => item.startsWith('bbs_auth='));
-  if (!auth) return next;
-  const base = next.replace(/;\s*$/, '').trim();
-  return base ? `${base}; ${auth}` : auth;
+  return keepAuthCookie(next, previous);
 }
 
 function persistSite(snapshot: SiteSessionSnapshot) {
   if (signedOut) return;
-  const token = memory.token;
-  const record = (token && snapshot.sessions[token]) || Object.values(snapshot.sessions).at(-1);
+  const record = pickPersistRecord(snapshot.sessions, memory.token);
   if (!record) {
-    writeLocal(COOKIE_KEY, null);
-    writeLocal(USER_KEY, null);
+    // 内存快照空不等于用户退出：destroy 的误判曾经从这里把磁盘写成 null。
+    console.warn('[session] 快照空，保留磁盘上的会话');
     return;
   }
   console.warn(
@@ -181,25 +211,42 @@ export async function hydrateSession(): Promise<void> {
     `bbs_auth=${/(^|;\s*)bbs_auth=/.test(cookies ?? '') ? 'yes' : 'no'}`,
   );
   const userRaw = Platform.OS === 'web' ? (webStore()?.getItem(USER_KEY) ?? null) : await nativeGet(USER_KEY);
-  if (memory.token && memory.refreshToken && userRaw) {
-    try {
-      restoreSiteSession({
-        sessions: {
-          [memory.token]: {
-            cookies: cookies ?? '',
-            refreshToken: memory.refreshToken,
-            user: JSON.parse(userRaw),
-          },
-        },
-        refresh: { [memory.refreshToken]: memory.token },
-      });
-    } catch {
-      restoreSiteSession(null);
+  if (cookies != null) lastCookies = cookies;
+  const user = parseStoredUser(userRaw);
+  const jar = cookies ?? '';
+  if (hasSessionCookie(jar)) {
+    if (!memory.token) {
+      memory.token = mintLocalToken('lsb');
+      writeLocal(TOKEN_KEY, memory.token);
+    }
+    if (!memory.refreshToken) {
+      memory.refreshToken = mintLocalToken('lsr');
+      writeLocal(REFRESH_KEY, memory.refreshToken);
     }
   }
+  if (memory.token && memory.refreshToken && (user || hasSessionCookie(jar))) {
+    restoreSiteSession({
+      sessions: {
+        [memory.token]: {
+          cookies: jar,
+          refreshToken: memory.refreshToken,
+          user: user ?? PLACEHOLDER_USER,
+        },
+      },
+      refresh: { [memory.refreshToken]: memory.token },
+    });
+  }
   setSiteSessionPersist(persistSite);
-  if (cookies && memory.token) void writeLinuxCookies(cookies);
+  if (jar && memory.token) void writeLinuxCookies(jar);
   memory.hydrated = true;
+}
+
+/** 本地还留着 bbs_auth 时，refresh 失败不得清盘。 */
+export function shouldWipeOnRefreshFailure(): boolean {
+  return shouldClearSessionOnRefreshFailure({
+    signedOut,
+    hasAuthCookie: hasSessionCookie(lastCookies),
+  });
 }
 
 export function getAccessToken(): string | null {

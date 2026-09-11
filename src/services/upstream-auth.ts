@@ -12,6 +12,8 @@ import {
   updateUpstreamCookies,
   updateUpstreamUser,
 } from './site-session';
+import { markSignedOut } from './session';
+import { decideSessionRefresh, hasBbsAuth, isChallengeHtml, keepAuthCookie, pageSessionLook } from './session-keep';
 import { decodeBase64Json } from '../utils/base64';
 import { isNativeApp, siteCredentials } from '../utils/runtime';
 
@@ -124,7 +126,7 @@ function pageTitle(html: string): string {
 }
 
 function isChallengePage(html: string): boolean {
-  return /just a moment|cf-browser-verification|challenge-platform|cf-challenge|attention required/i.test(html);
+  return isChallengeHtml(html);
 }
 
 function isLoginForm(html: string): boolean {
@@ -438,18 +440,44 @@ async function currentUser(token: string | null): Promise<UserDto> {
   const session = sessionForToken(token);
   if (!session) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
   try {
-    const home = await linuxGet('/', session.cookies);
-    updateUpstreamCookies(token!, home.cookies);
-    if (isLoginWall(home.html) || /nav-mine-guest/.test(home.html)) {
-      destroyUpstreamSession(token);
-      throw new MockApiError(401, 'UNAUTHORIZED', '登录已失效，请重新登录');
+    // 不要用首页判断登录：`/` 走镜像时经常被缓存成带 nav-mine-guest 的游客页。
+    const primary = await linuxGet('/mobile_menu', session.cookies);
+    const jar1 = keepAuthCookie(primary.cookies, session.cookies);
+    const look1 = pageSessionLook(primary.html);
+
+    const accept = async (jar: string, html: string): Promise<UserDto> => {
+      updateUpstreamCookies(token!, jar);
+      try {
+        const resolved = await resolveUser(jar, html);
+        updateUpstreamCookies(token!, keepAuthCookie(resolved.cookies, jar));
+        updateUpstreamUser(token!, resolved.user);
+        return resolved.user;
+      } catch {
+        return session.user;
+      }
+    };
+
+    if (look1 === 'logged-in') return accept(jar1, primary.html);
+    if (look1 === 'unknown') {
+      if (hasBbsAuth(jar1)) updateUpstreamCookies(token!, jar1);
+      return session.user;
     }
-    const resolved = await resolveUser(home.cookies, home.html);
-    updateUpstreamCookies(token!, resolved.cookies);
-    updateUpstreamUser(token!, resolved.user);
-    return resolved.user;
+
+    const confirm = await linuxGet('/topic_edit', jar1, '/mobile_menu');
+    const jar2 = keepAuthCookie(confirm.cookies, jar1);
+    const look2 = pageSessionLook(confirm.html);
+    if (look2 === 'logged-in') return accept(jar2, confirm.html);
+
+    if (decideSessionRefresh(look1, look2) === 'drop') {
+      markSignedOut();
+      destroyUpstreamSession(token);
+      throw new MockApiError(401, 'SESSION_EXPIRED', '登录已失效，请重新登录');
+    }
+
+    if (hasBbsAuth(jar2)) updateUpstreamCookies(token!, jar2);
+    return session.user;
   } catch (error) {
-    if (error instanceof MockApiError) throw error;
+    if (error instanceof MockApiError && error.code === 'SESSION_EXPIRED') throw error;
     return session.user;
   }
 }

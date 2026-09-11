@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import type { ApiErrorBody } from '../types/api';
 import { requestId } from '../utils/time';
 import { viaAccess } from '../utils/linux-access';
-import { getAccessToken, getRefreshToken, setSession, clearSession } from './session';
+import { getAccessToken, getRefreshToken, setSession, clearSession, shouldWipeOnRefreshFailure } from './session';
 import { handleAuthRequest } from './upstream-auth';
 import { handleLiveRequest } from './live';
 import type { MockRequest, MockResponse } from './mock';
@@ -132,7 +132,8 @@ async function tryRefresh(): Promise<boolean> {
       : await dispatchRemote('POST', '/auth/refresh', { body: { refreshToken }, auth: false });
     const data = result.data as { token?: string; refreshToken?: string } | undefined;
     if (result.error || !data?.token || !data.refreshToken) {
-      void clearSession();
+      if (shouldWipeOnRefreshFailure()) void clearSession();
+      else console.warn('[session] refresh 失败，但本地还留着 bbs_auth，不清盘');
       return false;
     }
     setSession(data.token, data.refreshToken);
