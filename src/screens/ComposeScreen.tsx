@@ -18,6 +18,7 @@ import { NbEditorDock, useNbEditor } from '../components/NbEditor';
 import { PostingNoticeDialog } from '../components/PostingNoticeDialog';
 import {
   LotteryFields,
+  RedPacketFields,
   TopicTypePicker,
   VirtualCardFields,
   WalletNoticeDialog,
@@ -27,6 +28,7 @@ import type {
   TopicLotteryComposeDto,
   TopicSpecialType,
   TopicVirtualCardComposeDto,
+  TopicRedPacketComposeDto,
 } from '../types/api';
 import { clearDraft, preloadDraft, saveDraft } from '../utils/draft';
 
@@ -60,6 +62,7 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [specialType, setSpecialType] = useState<TopicSpecialType>('');
+  const [redPacket, setRedPacket] = useState<TopicRedPacketComposeDto | null>(null);
   const [lottery, setLottery] = useState<TopicLotteryComposeDto | null>(null);
   const [card, setCard] = useState<TopicVirtualCardComposeDto | null>(null);
   const [walletOpen, setWalletOpen] = useState(false);
@@ -110,12 +113,15 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
       setSpecialType(data.specialType);
       setLottery(data.lottery ? cloneLottery(data.lottery) : null);
       setCard(data.virtualCard ? cloneCard(data.virtualCard) : null);
+      setRedPacket(data.redPacket ? { ...data.redPacket } : null);
     } else {
       if (!selectedForum && data.forum) setSelectedForum(data.forum);
       const lotteryForm = data.lottery;
       const cardForm = data.virtualCard;
+      const redForm = data.redPacket;
       if (lotteryForm) setLottery((current) => current ?? cloneLottery(lotteryForm));
       if (cardForm) setCard((current) => current ?? cloneCard(cardForm));
+      if (redForm) setRedPacket((current) => current ?? { ...redForm });
     }
   }, [composerQuery.data, edit]);
 
@@ -140,6 +146,14 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
       minReplyChars: lottery.minReplyChars,
       replyCaptcha: lottery.replyCaptcha,
       prizes: lottery.prizes,
+    } : undefined,
+    redPacket: specialType === 'red_packet' && redPacket ? {
+      distribution: redPacket.distribution,
+      claimRule: redPacket.claimRule,
+      minReplyChars: redPacket.minReplyChars,
+      count: redPacket.count,
+      fixedAmount: redPacket.fixedAmount,
+      totalAmount: redPacket.totalAmount,
     } : undefined,
     virtualCard: specialType === 'virtual_card' && card ? {
       originalType: card.originalType,
@@ -228,6 +242,7 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
           specialType={specialType}
           hasLottery={Boolean(lottery)}
           hasCard={Boolean(card)}
+          hasRedPacket={Boolean(redPacket)}
           onSelect={selectType}
         />
         {specialType === 'lottery' && lottery ? (
@@ -235,6 +250,9 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
         ) : null}
         {specialType === 'virtual_card' && card ? (
           <VirtualCardFields card={card} onChange={setCard} onLink={(href) => openAppHref(nav, href, selectedForum || '综合')} />
+        ) : null}
+        {specialType === 'red_packet' && redPacket ? (
+          <RedPacketFields redPacket={redPacket} onChange={setRedPacket} onLink={(href) => openAppHref(nav, href, selectedForum || '综合')} />
         ) : null}
         <Text style={styles.composeSectionTitle}>标题</Text>
         <TextInput value={title} onChangeText={setTitle} placeholder="请输入主题标题" placeholderTextColor={C.dim} style={styles.composeTitleInput} />

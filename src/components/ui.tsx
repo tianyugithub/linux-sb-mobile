@@ -20,6 +20,7 @@ import type { CommentDto } from '../types/api';
 import { C } from '../theme/palette';
 import { styles } from '../theme/app-styles';
 import { mediaUrl } from '../services/client';
+import { useRemoteMedia } from '../hooks/useRemoteMedia';
 import { decodeEntities, firstGlyph } from '../utils/entities';
 import { stampToneForKind, topicStampByType } from '../data/topic-stamp';
 import { useAndroidBack, useAppInsets, useNav } from '../navigation/nav';
@@ -191,14 +192,15 @@ export function UserAvatar({
 }) {
   const [failed, setFailed] = useState(false);
   const src = mediaUrl(url);
+  // 站内默认头像是 SVG，RN 的 Image 解码不了，必须用 react-native-svg 渲染。
+  const isSvg = Boolean(src) && /\.svg(\?|$)/i.test(src as string);
+  const resolved = useRemoteMedia(isSvg ? undefined : src);
   useEffect(() => {
     setFailed(false);
   }, [src]);
   const r = radius ?? 7;
   const letter = firstGlyph(name, '?');
-  const showImage = Boolean(src) && !failed;
-  // 站内默认头像是 SVG，RN 的 Image 解码不了，必须用 react-native-svg 渲染。
-  const isSvg = Boolean(src) && /\.svg(\?|$)/i.test(src as string);
+  const showImage = Boolean(isSvg ? src : resolved) && !failed;
   const dot = size >= 40 ? 12 : 10;
   /**
    * 在线圆点的位置。
@@ -218,7 +220,7 @@ export function UserAvatar({
           ) : Platform.OS === 'web' ? (
             webImg(src!, { width: size, height: size, borderRadius: r }, () => setFailed(true))
           ) : (
-            <Image source={{ uri: src }} style={{ width: size, height: size, borderRadius: r }} onError={() => setFailed(true)} />
+            <Image source={{ uri: resolved ?? src }} style={{ width: size, height: size, borderRadius: r }} onError={() => setFailed(true)} />
           )
         ) : (
           <Text style={[styles.avatarText, size >= 50 && styles.profileAvatarText]}>{letter}</Text>
@@ -350,6 +352,8 @@ export function stampTone(type: string, label?: string, kind?: string): 'default
   const stampKind = kind ?? (type === 'stamp' || topicStampByType(type) ? type : '');
   if (stampKind) return stampToneForKind(stampKind);
   if (type === 'card') return 'success';
+  // 红包帖：官网标题旁的「红包帖」是红底（--danger-soft / --danger）
+  if (type === 'red_packet') return 'danger';
   if (type === 'lottery' && label && /已开奖|结束/.test(label)) return 'success';
   if (type === 'featured' || type === 'lottery' || type === 'pinned') return 'warning';
   return 'default';

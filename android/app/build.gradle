@@ -88,6 +88,19 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+/*
+ * 版本号以 app.json 为唯一来源。
+ *
+ * expo prebuild 只会在 prebuild 那一刻把 app.json 的 version/versionCode 写进这个文件，
+ * 之后我们只改 app.json —— 结果 native 侧一直停在旧值（实测 android:versionName 卡在
+ * 0.1.12、versionCode 卡在 139，而包内 JS 已经是 0.1.15）。系统与安装器看的是 native
+ * 这一份，于是「App 里显示 0.1.15、安装包却自称 0.1.12」。这里直接读 app.json，改一处就够。
+ */
+def appJsonFile = rootProject.file("../app.json")
+def appJson = new groovy.json.JsonSlurper().parse(appJsonFile)
+def appVersionName = appJson.expo.version
+def appVersionCode = (appJson.expo.android?.versionCode ?: 1) as Integer
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -99,8 +112,8 @@ android {
         applicationId 'sb.linux.mobile'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 139
-        versionName "0.1.12"
+        versionCode appVersionCode
+        versionName appVersionName
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -175,9 +188,8 @@ android {
  * 与安装包版本号对不上（0.1.6 的包显示 0.1.5 就是这么来的）。
  */
 tasks.matching { it.name.toLowerCase().contains("bundle") }.configureEach {
-    def appJson = rootProject.file("../app.json")
-    if (appJson.exists()) {
-        inputs.file(appJson).withPropertyName("appJson").optional()
+    if (appJsonFile.exists()) {
+        inputs.file(appJsonFile).withPropertyName("appJson").optional()
     }
 }
 

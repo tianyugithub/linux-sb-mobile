@@ -39,6 +39,8 @@ import type {
   TopicFilterDto,
   TopicSpecialType,
   TopicVirtualCardComposeDto,
+  TopicRedPacketComposeDto,
+  TopicRedPacketDto,
 } from '../types/api';
 import { decodeBase64Json } from '../utils/base64';
 import { decodeEntities, firstGlyph } from '../utils/entities';
@@ -67,12 +69,16 @@ import {
 import { redactSecrets } from '../utils/redact';
 import { MockApiError, type MockRequest, type MockResponse } from './mock';
 import { cookiesForToken, sessionForToken, updateUpstreamCookies, updateUpstreamUser } from './site-session';
+import { sessionAcceptsCookies } from './session';
 import { isNativeApp, siteCredentials } from '../utils/runtime';
 import { syncNotifySession } from 'linux-notify';
 import { ESSENCE_REASON_MAX, ESSENCE_REASON_MIN } from '../data/essence';
 import { hasOfficialImageUpload, isR2Ready, loadR2Config, rememberOfficialUploadCapability, uploadToR2 } from './r2-config';
+import { LINUX_ORIGIN, isLiveOrigin, liveBase, viaAccess } from '../utils/linux-access';
+import { hasLinuxSessionCookie, writeLinuxCookies } from '../utils/site-cookies';
 
-export const LINUX_ORIGIN = 'https://linux.sb';
+export { LINUX_ORIGIN };
+
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
@@ -142,8 +148,9 @@ function userIsOnline(userId: string, onlineIds: Set<string>): boolean {
   return /^\d+$/.test(id) && onlineIds.has(id);
 }
 
-function liveBase(): string {
-  return LINUX_ORIGIN;
+export function bustLiveCache() {
+  htmlCache.clear();
+  inflightHtml.clear();
 }
 
 export function absUrl(src: string): string {
@@ -255,7 +262,25 @@ export function parseCurrentUserId(html: string): string | null {
   return null;
 }
 
+function parseExposedSetCookies(raw: string): string[] {
+  const text = raw.trim();
+  if (text.startsWith('[')) {
+    try {
+      const list = JSON.parse(text) as unknown;
+      if (Array.isArray(list)) return list.map((item) => String(item)).filter(Boolean);
+    } catch {
+      /* 不是 JSON 就按老格式拆 */
+    }
+  }
+  return text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
 function setCookiesOf(response: Response): string[] {
+  const exposed = response.headers.get('x-lsb-set-cookie');
+  if (exposed) {
+    const listed = parseExposedSetCookies(exposed);
+    if (listed.length) return listed;
+  }
   const headers = response.headers as Headers & { getSetCookie?: () => string[] };
   if (typeof headers.getSetCookie === 'function') {
     const listed = headers.getSetCookie();
@@ -297,8 +322,13 @@ function applySetCookie(existing: string, setCookies: string[]): string {
 }
 
 function rememberCookies(next: string) {
+  if (!sessionAcceptsCookies()) return;
   if (currentToken && next) updateUpstreamCookies(currentToken, next);
-  if (next) syncNotifySession(next);
+  if (!next) return;
+  // 退出后内存会话已拆掉，但飞着的请求还会带回 bbs_auth。
+  if (hasLinuxSessionCookie(next) && !sessionForToken(currentToken)) return;
+  syncNotifySession(next);
+  void writeLinuxCookies(next);
 }
 
 function csrfFrom(html: string): string {
@@ -409,6 +439,27 @@ type LinuxResult = {
   flash?: string;
 };
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function describeUpstreamError(error: unknown): MockApiError {
+  if (error instanceof MockApiError) return error;
+  if (error instanceof Error && error.name === 'AbortError') {
+    return new MockApiError(504, 'UPSTREAM', '连接超时，请检查网络后重试');
+  }
+  const raw = error instanceof Error ? error.message : '';
+  if (!raw || /network request failed|failed to fetch|load failed|err_connection|econnreset|ssl|timed out|timeout/i.test(raw)) {
+    return new MockApiError(502, 'UPSTREAM', '暂时连不上官网，请再试一次');
+  }
+  return new MockApiError(502, 'UPSTREAM', raw);
+}
+
+function isRetryableUpstream(error: unknown): boolean {
+  if (error instanceof MockApiError) return error.status === 502 || error.status === 504;
+  return true;
+}
+
 async function linuxRequest(path: string, init?: {
   method?: string;
   body?: URLSearchParams | FormData;
@@ -417,9 +468,39 @@ async function linuxRequest(path: string, init?: {
   accept?: string;
   timeoutMs?: number;
 }): Promise<LinuxResult> {
+  let last: unknown;
+  const tries = init?.method && init.method !== 'GET' && init.method !== 'HEAD' ? 1 : 2;
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), init?.timeoutMs ?? 15_000);
+    try {
+      return await linuxRequestOnce(path, init, controller);
+    } catch (error) {
+      last = error;
+      if (!isRetryableUpstream(error) && !(error instanceof Error && error.name === 'AbortError')) {
+        throw describeUpstreamError(error);
+      }
+      if (attempt < tries - 1) await sleep(350 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw describeUpstreamError(last);
+}
+
+async function linuxRequestOnce(
+  path: string,
+  init: {
+    method?: string;
+    body?: URLSearchParams | FormData;
+    headers?: Record<string, string>;
+    cookie?: string | null;
+    accept?: string;
+    timeoutMs?: number;
+  } | undefined,
+  controller: AbortController,
+): Promise<LinuxResult> {
   let cookie = init?.cookie !== undefined ? init.cookie : liveCookie();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), init?.timeoutMs ?? 20_000);
   const baseHeaders: Record<string, string> = {
     Accept: init?.accept ?? 'text/html,application/xhtml+xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
     'Accept-Language': 'zh-CN,zh;q=0.9',
@@ -432,81 +513,72 @@ async function linuxRequest(path: string, init?: {
   let body = init?.body;
   let url = `${liveBase()}${path.startsWith('/') ? path : `/${path}`}`;
   let flash = '';
-  try {
-    let response: Response | null = null;
-    let html = '';
-    let resultHtml = '';
-    let json: Record<string, unknown> | null = null;
-    for (let hop = 0; hop < 8; hop += 1) {
-      const headers: Record<string, string> = { ...baseHeaders };
-      if (cookie) headers.Cookie = cookie;
-      const sendBody = method !== 'GET' && method !== 'HEAD' ? body : undefined;
-      const payload = sendBody instanceof URLSearchParams ? sendBody.toString() : sendBody;
-      if (sendBody instanceof URLSearchParams) headers['Content-Type'] = 'application/x-www-form-urlencoded';
-      else delete headers['Content-Type'];
-      const credentials = siteCredentials();
+  let response: Response | null = null;
+  let html = '';
+  let resultHtml = '';
+  let json: Record<string, unknown> | null = null;
+  for (let hop = 0; hop < 8; hop += 1) {
+    const headers: Record<string, string> = { ...baseHeaders };
+    if (cookie) headers.Cookie = cookie;
+    const sendBody = method !== 'GET' && method !== 'HEAD' ? body : undefined;
+    const payload = sendBody instanceof URLSearchParams ? sendBody.toString() : sendBody;
+    if (sendBody instanceof URLSearchParams) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    else delete headers['Content-Type'];
+    const credentials = siteCredentials();
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: payload,
+        redirect: 'manual',
+        credentials,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      response = await fetch(url, {
+        method,
+        headers,
+        body: payload,
+        redirect: 'follow',
+        credentials,
+        signal: controller.signal,
+      });
+    }
+    const setCookies = setCookiesOf(response);
+    const incoming = setCookies.join('; ');
+    const hopFlash = decodeFlashCookie(incoming);
+    if (hopFlash) flash = hopFlash;
+    cookie = applySetCookie(cookie ?? '', setCookies);
+    if (cookie) rememberCookies(cookie);
+    const loc = response.headers.get('location');
+    const raw = await response.text();
+    html = raw;
+    if (/gacha-result-card|gacha-result-name|gacha-pull-10-item|gacha-pull-10-name|gacha-pull-100-item|gacha-pull-100-name|gacha-pull-10-grid|gacha-pull-100-grid/.test(raw)) {
+      resultHtml = raw;
+    }
+    const ct = response.headers.get('content-type') || '';
+    if (ct.includes('json') || /^\s*[{\[]/.test(raw)) {
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body: payload,
-          redirect: 'manual',
-          credentials,
-          signal: controller.signal,
-        });
+        json = JSON.parse(raw) as Record<string, unknown>;
       } catch {
-        response = await fetch(url, {
-          method,
-          headers,
-          body: payload,
-          redirect: 'follow',
-          credentials,
-          signal: controller.signal,
-        });
+        /* keep previous json */
       }
-      const setCookies = setCookiesOf(response);
-      const incoming = setCookies.join('; ');
-      const hopFlash = decodeFlashCookie(incoming);
-      if (hopFlash) flash = hopFlash;
-      cookie = applySetCookie(cookie ?? '', setCookies);
-      if (cookie) rememberCookies(cookie);
-      const loc = response.headers.get('location');
-      const raw = await response.text();
-      html = raw;
-      if (/gacha-result-card|gacha-result-name|gacha-pull-10-item|gacha-pull-10-name|gacha-pull-100-item|gacha-pull-100-name|gacha-pull-10-grid|gacha-pull-100-grid/.test(raw)) {
-        resultHtml = raw;
-      }
-      const ct = response.headers.get('content-type') || '';
-      if (ct.includes('json') || /^\s*[{\[]/.test(raw)) {
-        try {
-          json = JSON.parse(raw) as Record<string, unknown>;
-        } catch {
-          /* keep previous json */
-        }
-      }
-      if (response.status >= 300 && response.status < 400 && loc) {
-        const next = new URL(loc, url);
-        if (next.origin !== LINUX_ORIGIN && next.origin !== liveBase()) break;
-        url = next.toString();
-        if (response.status === 303 || (method !== 'GET' && method !== 'HEAD' && (response.status === 301 || response.status === 302))) {
-          method = 'GET';
-          body = undefined;
-        }
-        continue;
-      }
-      break;
     }
-    if (!response) throw new MockApiError(502, 'UPSTREAM', '无法连接 linux.sb');
-    return { status: response.status, url: response.url || url, html: resultHtml || html, cookies: cookie ?? '', json, flash };
-  } catch (error) {
-    if (error instanceof MockApiError) throw error;
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new MockApiError(504, 'UPSTREAM', '连接超时，请检查网络后重试');
+    if (response.status >= 300 && response.status < 400 && loc) {
+      const next = new URL(loc, url);
+      if (!isLiveOrigin(next.origin) && !/\.linux\.sb$/i.test(next.hostname)) break;
+      url = viaAccess(next.toString());
+      if (response.status === 303 || (method !== 'GET' && method !== 'HEAD' && (response.status === 301 || response.status === 302))) {
+        method = 'GET';
+        body = undefined;
+      }
+      continue;
     }
-    throw new MockApiError(502, 'UPSTREAM', error instanceof Error ? error.message : '无法连接 linux.sb');
-  } finally {
-    clearTimeout(timer);
+    break;
   }
+  if (!response) throw new MockApiError(502, 'UPSTREAM', '暂时连不上官网，请再试一次');
+  return { status: response.status, url: response.url || url, html: resultHtml || html, cookies: cookie ?? '', json, flash };
 }
 
 function htmlCacheKey(url: string, cookie: string | null): string {
@@ -777,6 +849,9 @@ function tagsFromBlock(block: string): TopicTag[] {
   });
   const card = block.match(/virtual-card-title-status[^>]*>([^<]+)/);
   if (card) tags.push({ type: 'card', label: stripTags(card[1]).trim() || '发卡中' });
+  // 红包帖：标题旁的 `<span class="red-packet-title-status">红包帖</span>`
+  const redPacket = block.match(/red-packet-title-status[^>]*>([^<]+)/);
+  if (redPacket) tags.push({ type: 'red_packet', label: stripTags(redPacket[1]).trim() || '红包帖' });
   return tags;
 }
 
@@ -1166,6 +1241,66 @@ function parseHtmlForm(html: string): { action: string; fields: Record<string, s
   const submit = stripTags(first(hit[2], /<button\b[^>]*>([\s\S]*?)<\/button>/) || '').trim() || '兑换';
   const disabled = /<button\b[^>]*\bdisabled\b/i.test(hit[2]);
   return { action, fields, submit, disabled, maxQuantity, hasQuantity };
+}
+
+/**
+ * 红包帖（官网 red_packet 插件）的主题页卡片。真实结构：
+ *
+ *   <section class="red-packet-card is-open">
+ *     <header><div><strong>积分红包</strong><span>进行中</span></div><b>剩余红包 63 份</b></header>
+ *     <div class="red-packet-card-grid">
+ *       <div><span>红包类型</span><strong>固定金额红包</strong><small>每份 1 积分</small></div>
+ *       …
+ *     </div>
+ *     <p>领取规则：随机获得；每人仅有一次随机获得机会。…</p>
+ *   </section>
+ *
+ * 领取方式是「回帖」，回帖框里还挂着
+ *   <span hidden data-red-packet-live data-red-packet-status-url="/red_packet_status?topic_id=21348">
+ * 发完回复官网就拿这个地址换回新的 panel_html。表格里的文字（含剩余份数、回帖字数要求）
+ * 一律以页面为准，不写死 —— 官网改文案时卡片不会失真。
+ */
+export function parseTopicRedPacket(html: string): TopicRedPacketDto | null {
+  const block = extractClassBlock(html, 'red-packet-card');
+  const titleStatus = first(html, /red-packet-title-status[^>]*>([^<]+)/);
+  if (!block && !titleStatus) return null;
+  const header = block.match(/<header[^>]*>([\s\S]*?)<\/header>/i)?.[1] ?? '';
+  const grid = block.match(/red-packet-card-grid[^>]*>([\s\S]*?)<p[\s>]/i)?.[1] ?? '';
+  const cells = [...grid.matchAll(/<div>\s*<span>([\s\S]*?)<\/span>\s*<strong>([\s\S]*?)<\/strong>\s*<small>([\s\S]*?)<\/small>\s*<\/div>/g)]
+    .map((row) => ({
+      label: decode(stripTags(row[1])).trim(),
+      value: decode(stripTags(row[2])).trim(),
+      note: decode(stripTags(row[3])).trim(),
+    }))
+    .filter((cell) => cell.label || cell.value);
+  const state: TopicRedPacketDto['state'] = /is-exhausted/.test(block)
+    ? 'exhausted'
+    : /is-cancelled/.test(block)
+      ? 'cancelled'
+      : 'open';
+  return {
+    title: decode(stripTags(first(header, /<strong>([\s\S]*?)<\/strong>/) || '')).trim() || titleStatus || '红包帖',
+    status: decode(stripTags(first(header, /<span>([\s\S]*?)<\/span>/) || '')).trim()
+      || (state === 'exhausted' ? '已领完' : state === 'cancelled' ? '已取消' : '进行中'),
+    remaining: decode(stripTags(first(header, /<b>([\s\S]*?)<\/b>/) || '')).trim(),
+    state,
+    cells,
+    rule: decode(stripTags(first(block, /<p[^>]*>([\s\S]*?)<\/p>/) || '')).trim(),
+    statusUrl: decode(
+      html.match(/data-red-packet-status-url="([^"]+)"/)?.[1]
+      || block.match(/data-red-packet-status-url="([^"]+)"/)?.[1]
+      || '',
+    ).trim(),
+  };
+}
+
+/**
+ * 回帖后刷新红包卡片：官网 `/red_packet_status` 回 `{ok, panel_html}`，
+ * panel_html 就是新的 `.red-packet-card`。只认卡片本身，取不到就返回 null（前台保留旧卡片）。
+ */
+export function parseRedPacketPanel(html: string): TopicRedPacketDto | null {
+  if (!/<section[^>]*class="[^"]*red-packet-card/.test(html)) return null;
+  return parseTopicRedPacket(html);
 }
 
 function parseTopicVirtualCard(html: string): TopicVirtualCardDto | null {
@@ -1849,6 +1984,20 @@ export function parseComments(html: string, topicId: string): CommentDto[] {
     const essenceLabel = decode(
       first(block, /topic-essence-review-reply-label[^>]*>([\s\S]*?)<\/span>/) || '',
     ).trim();
+    /**
+     * 红包帖里领到红包的那层楼，官方在楼层信息里挂了个奖励标记：
+     *   <span class="red-packet-reply-reward" aria-label="红包奖励 +1 积分，财源滚滚！">
+     *     …<span class="red-packet-reply-points">+1</span>
+     *     <span class="red-packet-reply-tooltip" role="tooltip">红包奖励 +1 积分，财源滚滚！</span>
+     *   </span>
+     * 金额取 points 里的数字，说明取 tooltip（拿不到就退回 aria-label）。
+     */
+    const rewardPoints = Number(
+      block.match(/red-packet-reply-points[^>]*>\s*\+?\s*(\d+)/)?.[1] ?? 0,
+    );
+    const rewardTip = decode(first(block, /red-packet-reply-tooltip[^>]*>([\s\S]*?)<\/span>/) || '').trim()
+      || decode(block.match(/red-packet-reply-reward[^>]*aria-label="([^"]*)"/)?.[1] ?? '').trim();
+    const redPacket = rewardPoints > 0 || rewardTip ? { points: rewardPoints, tip: rewardTip } : null;
     const deleteTag = block.match(/<[^>]*data-sb-limit-edit-time-reply-delete[^>]*>/i)?.[0] || '';
     const deleteFormTag = block.match(/<form\b[^>]*(?:sb-limit-edit-time-delete|action="\/sb_limit_edit_time_delete"|action="\/delete")[^>]*>/i)?.[0] || '';
     const deleteConfirm = decode(
@@ -1872,6 +2021,7 @@ export function parseComments(html: string, topicId: string): CommentDto[] {
       parentId: parentFloor,
       parentFloor,
       essenceLabel,
+      redPacket,
       authorId: authorHrefId || commentUid || authorName,
       authorName,
       authorTitle: equipped.name,
@@ -2646,6 +2796,35 @@ function parseVirtualCardCompose(form: string): TopicVirtualCardComposeDto | nul
   };
 }
 
+/**
+ * 发帖页的红包表单（`.red-packet-compose` 里的 `[data-red-packet-fields]`）。
+ * 限值取自 `data-red-packet-*`，默认值取自各输入框；官网改范围时跟得上。
+ */
+export function parseRedPacketCompose(form: string): TopicRedPacketComposeDto | null {
+  const block = extractClassBlock(form, 'red-packet-compose');
+  if (!block) return null;
+  const fields = block.match(/data-red-packet-fields[^>]*>/)?.[0] ?? '';
+  if (!fields) return null;
+  const num = (tag: string, name: string) => Number(tag.match(new RegExp(`\\b${name}="(\\d+)"`))?.[1] ?? 0);
+  const distribution = first(block, /<select[^>]*name="red_packet_distribution"[^>]*>[\s\S]*?<option[^>]*value="([^"]+)"/) || 'fixed';
+  const claimRule = first(block, /<select[^>]*name="red_packet_claim_rule"[^>]*>[\s\S]*?<option[^>]*value="([^"]+)"/) || 'first_come';
+  const balance = block.match(/data-red-packet-balance[^>]*>/)?.[0] ?? '';
+  const value = (name: string) => first(block, new RegExp(`<input[^>]*name="${name}"[^>]*value="([^"]*)"`)) || '';
+  return {
+    distribution: distribution === 'random' ? 'random' : 'fixed',
+    claimRule: claimRule === 'random_chance' ? 'random_chance' : 'first_come',
+    minReplyChars: value('red_packet_min_reply_chars') || '5',
+    count: value('red_packet_count') || '1',
+    fixedAmount: value('red_packet_fixed_amount') || '1',
+    totalAmount: value('red_packet_total_amount') || '1',
+    maxUnit: num(fields, 'data-red-packet-max-unit') || 1000,
+    minUnit: num(fields, 'data-red-packet-minimum-unit') || 1,
+    minTotal: num(fields, 'data-red-packet-minimum-total') || 1,
+    points: num(balance, 'data-points'),
+    reviewUrl: first(block, /href="([^"]*topic\/13879[^"]*)"/) || '',
+  };
+}
+
 function parseTopicEditor(html: string): TopicEditorDto {
   rememberUploadPermissionFrom(html);
   const form = extractTopicEditForm(html);
@@ -2662,7 +2841,9 @@ function parseTopicEditor(html: string): TopicEditorDto {
   const forumId = fields.forum_id || selectedForum?.value || forums[0]?.id || '';
   const forumName = forums.find((item) => item.id === forumId)?.name || selectedForum?.label || '';
   const specialRaw = parseCheckedRadio(form, 'topic_special_type');
-  const specialType: TopicSpecialType = specialRaw === 'lottery' || specialRaw === 'virtual_card' ? specialRaw : '';
+  const specialType: TopicSpecialType = specialRaw === 'lottery' || specialRaw === 'virtual_card' || specialRaw === 'red_packet'
+    ? specialRaw
+    : '';
   return {
     title: title.trim(),
     body,
@@ -2672,6 +2853,7 @@ function parseTopicEditor(html: string): TopicEditorDto {
     specialType,
     lottery: parseLotteryCompose(form),
     virtualCard: parseVirtualCardCompose(form),
+    redPacket: parseRedPacketCompose(form),
   };
 }
 
@@ -2694,10 +2876,19 @@ const TOPIC_SPECIAL_FIELD_KEYS = [
   'virtual_card_auto_reply',
   'virtual_card_auto_reply_content',
   'virtual_card_values',
+  'red_packet_distribution',
+  'red_packet_claim_rule',
+  'red_packet_min_reply_chars',
+  'red_packet_count',
+  'red_packet_fixed_amount',
+  'red_packet_total_amount',
+  'red_packet_confirm',
 ];
 
-function topicSpecialPostFields(input: TopicComposeInput): Record<string, string | string[]> {
-  const special = input.specialType === 'lottery' || input.specialType === 'virtual_card' ? input.specialType : '';
+export function topicSpecialPostFields(input: TopicComposeInput): Record<string, string | string[]> {
+  const special = input.specialType === 'lottery' || input.specialType === 'virtual_card' || input.specialType === 'red_packet'
+    ? input.specialType
+    : '';
   const fields: Record<string, string | string[]> = {
     topic_special_type: special,
     community_lottery_original_type: input.lottery?.originalType ?? '',
@@ -2714,6 +2905,17 @@ function topicSpecialPostFields(input: TopicComposeInput): Record<string, string
     fields['lottery_prize_quantity[]'] = prizes.map((item) => item.quantity || '1');
     fields['lottery_prize_value[]'] = prizes.map((item) => item.value);
   }
+  if (special === 'red_packet' && input.redPacket) {
+    const red = input.redPacket;
+    fields.red_packet_distribution = red.distribution === 'random' ? 'random' : 'fixed';
+    fields.red_packet_claim_rule = red.claimRule === 'random_chance' ? 'random_chance' : 'first_come';
+    fields.red_packet_min_reply_chars = red.minReplyChars || '5';
+    fields.red_packet_count = red.count || '1';
+    if (red.distribution === 'random') fields.red_packet_total_amount = red.totalAmount || '1';
+    else fields.red_packet_fixed_amount = red.fixedAmount || '1';
+    // 官网用这个 hidden 字段确认「确实要发红包」，缺了会被服务端拒
+    fields.red_packet_confirm = '1';
+  }
   if (special === 'virtual_card' && input.virtualCard) {
     fields.virtual_card_name = input.virtualCard.name;
     fields.virtual_card_currency = input.virtualCard.currency || 'points';
@@ -2729,6 +2931,7 @@ function topicSpecialPostFields(input: TopicComposeInput): Record<string, string
 function composeInputFrom(payload: Record<string, unknown>): TopicComposeInput {
   const lottery = payload.lottery && typeof payload.lottery === 'object' ? payload.lottery as Record<string, unknown> : null;
   const card = payload.virtualCard && typeof payload.virtualCard === 'object' ? payload.virtualCard as Record<string, unknown> : null;
+  const red = payload.redPacket && typeof payload.redPacket === 'object' ? payload.redPacket as Record<string, unknown> : null;
   const prizes = lottery && Array.isArray(lottery.prizes) ? lottery.prizes.map((item) => {
     const prize = item && typeof item === 'object' ? item as Record<string, unknown> : {};
     return {
@@ -2742,7 +2945,9 @@ function composeInputFrom(payload: Record<string, unknown>): TopicComposeInput {
     title: String(payload.title ?? ''),
     body: String(payload.body ?? ''),
     forum: String(payload.forum ?? ''),
-    specialType: payload.specialType === 'lottery' || payload.specialType === 'virtual_card' ? payload.specialType : '',
+    specialType: payload.specialType === 'lottery' || payload.specialType === 'virtual_card' || payload.specialType === 'red_packet'
+      ? payload.specialType
+      : '',
     lottery: lottery ? {
       originalType: String(lottery.originalType ?? ''),
       drawAt: String(lottery.drawAt ?? ''),
@@ -2750,6 +2955,14 @@ function composeInputFrom(payload: Record<string, unknown>): TopicComposeInput {
       minReplyChars: String(lottery.minReplyChars ?? '5'),
       replyCaptcha: Boolean(lottery.replyCaptcha),
       prizes,
+    } : undefined,
+    redPacket: red ? {
+      distribution: red.distribution === 'random' ? 'random' : 'fixed',
+      claimRule: red.claimRule === 'random_chance' ? 'random_chance' : 'first_come',
+      minReplyChars: String(red.minReplyChars ?? '5'),
+      count: String(red.count ?? '1'),
+      fixedAmount: String(red.fixedAmount ?? '1'),
+      totalAmount: String(red.totalAmount ?? '1'),
     } : undefined,
     virtualCard: card ? {
       originalType: String(card.originalType ?? ''),
@@ -3866,10 +4079,27 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       liked: parsed?.liked ?? false,
       coined: parsed?.coined ?? false,
       likeTiers: parsed?.likeTiers,
+      redPacket: parsed?.redPacket ?? null,
       floor: parsed?.floor ?? null,
       canEdit: parsed?.canEdit ?? true,
       canDelete: parsed?.canDelete ?? true,
     };
+  }
+
+  /**
+   * 回帖后刷新红包卡片：走官网回帖框里那个 `data-red-packet-status-url`
+   * （`/red_packet_status?topic_id=<id>`，XHR 回 `{ok, panel_html}`）。
+   */
+  const topicRedPacket = match(path, /^\/topics\/([^/]+)\/red-packet$/);
+  if (topicRedPacket && method === 'GET') {
+    const topicId = topicRedPacket[0];
+    const status = await linuxRequest(`/red_packet_status?topic_id=${encodeURIComponent(topicId)}`, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
+      accept: 'application/json',
+    });
+    const panel = typeof status.json?.panel_html === 'string' ? status.json.panel_html : '';
+    const card = panel ? parseRedPacketPanel(panel) : parseRedPacketPanel(status.html || '');
+    return { ok: Boolean(card), card };
   }
 
   const topicCommentEdit = match(path, /^\/topics\/([^/]+)\/comments\/([^/]+)\/edit$/);
@@ -4019,6 +4249,7 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       barrage,
       lottery: parseTopicLottery(html),
       virtualCard: parseTopicVirtualCard(html),
+      redPacket: parseTopicRedPacket(html),
       collections: parseTopicCollectionForm(html)?.items ?? [],
     };
   }
@@ -5135,7 +5366,7 @@ export async function handleLiveRequest(req: MockRequest): Promise<MockResponse>
     }
     return {
       status: 502,
-      error: { code: 'UPSTREAM', message: error instanceof Error ? error.message : '无法连接 linux.sb', requestId: requestId() },
+      error: { code: 'UPSTREAM', message: describeUpstreamError(error).message, requestId: requestId() },
     };
   } finally {
     currentToken = prev;

@@ -42,6 +42,8 @@ export type TopicTagType =
   | 'hot'
   | 'lottery'
   | 'card'
+  /** 红包帖：标题旁的「红包帖」标记 */
+  | 'red_packet'
   | 'apply_featured'
   /** 官方 topic_stamp 印章：荐 / 精 / 热 / 新。 */
   | 'recommend'
@@ -234,7 +236,7 @@ export type TopicCollectionPickDto = {
   included: boolean;
 };
 
-export type TopicSpecialType = '' | 'lottery' | 'virtual_card';
+export type TopicSpecialType = '' | 'lottery' | 'virtual_card' | 'red_packet';
 
 export type TopicComposeForumDto = {
   id: string;
@@ -286,6 +288,52 @@ export type TopicVirtualCardComposeDto = {
   reviewUrl: string;
 };
 
+/**
+ * 红包帖（官网 `red_packet` 插件）。
+ *
+ * 官方表单在发帖页的 `.red-packet-compose` 里，限值由 `data-red-packet-*` 给出：
+ * 单份 50–1000 积分、总额至少 500 积分；领取靠「回帖」，可设最低回复字数（5–50）。
+ */
+export type TopicRedPacketComposeDto = {
+  distribution: 'fixed' | 'random';
+  claimRule: 'first_come' | 'random_chance';
+  minReplyChars: string;
+  count: string;
+  fixedAmount: string;
+  totalAmount: string;
+  /** 单份上限（data-red-packet-max-unit） */
+  maxUnit: number;
+  /** 单份下限（data-red-packet-minimum-unit） */
+  minUnit: number;
+  /** 总额下限（data-red-packet-minimum-total） */
+  minTotal: number;
+  /** 积分余额（data-points） */
+  points: number;
+  reviewUrl: string;
+};
+
+/**
+ * 主题页上的红包卡片（服务端渲染的 `.red-packet-card`）。
+ * 三格分别对应「红包类型 / 剩余积分 / 回帖要求」，文案全部取自页面，不写死。
+ */
+export type TopicRedPacketCellDto = {
+  label: string;
+  value: string;
+  note: string;
+};
+
+export type TopicRedPacketDto = {
+  title: string;
+  status: string;
+  /** 「剩余红包 63 份」 */
+  remaining: string;
+  state: 'open' | 'exhausted' | 'cancelled';
+  cells: TopicRedPacketCellDto[];
+  rule: string;
+  /** `data-red-packet-status-url`：回帖后官网用它刷新卡片 */
+  statusUrl: string;
+};
+
 export type TopicEditorDto = {
   title: string;
   body: string;
@@ -295,6 +343,7 @@ export type TopicEditorDto = {
   specialType: TopicSpecialType;
   lottery: TopicLotteryComposeDto | null;
   virtualCard: TopicVirtualCardComposeDto | null;
+  redPacket: TopicRedPacketComposeDto | null;
 };
 
 export type TopicComposeInput = {
@@ -309,6 +358,14 @@ export type TopicComposeInput = {
     minReplyChars: string;
     replyCaptcha: boolean;
     prizes: TopicLotteryPrizeInputDto[];
+  };
+  redPacket?: {
+    distribution: 'fixed' | 'random';
+    claimRule: 'first_come' | 'random_chance';
+    minReplyChars: string;
+    count: string;
+    fixedAmount: string;
+    totalAmount: string;
   };
   virtualCard?: {
     originalType?: string;
@@ -337,6 +394,7 @@ export type TopicDetailDto = {
   barrage: BarrageItemDto[];
   lottery: TopicLotteryDto | null;
   virtualCard: TopicVirtualCardDto | null;
+  redPacket: TopicRedPacketDto | null;
   collections: TopicCollectionPickDto[];
 };
 
@@ -383,6 +441,8 @@ export type TopicVirtualCardDto = {
 export type CommentDto = {
   /** 「精华竞猜 · 预测会/不会加精」：竞猜理由作为评议回帖发布时官方给的标签。 */
   essenceLabel?: string;
+  /** 红包帖里领到红包的楼层：官方在楼层信息里挂的「+N」奖励标记。 */
+  redPacket?: { points: number; tip: string } | null;
   id: string;
   topicId: string;
   parentId: string | null;

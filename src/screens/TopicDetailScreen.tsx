@@ -22,11 +22,13 @@ import type {
   EssenceVoteDto,
   TopicCollectionPickDto,
   TopicLotteryDto,
+  TopicRedPacketDto,
   TopicVirtualCardDto,
 } from '../types/api';
 import { api, mapTopic, mapUser } from '../services/api';
 import { pickPostImages, uploadPostImageFile } from '../services/post-image';
 import { ApiError, mediaUrl } from '../services/client';
+import { useRemoteMedia } from '../hooks/useRemoteMedia';
 import { firstGlyph } from '../utils/entities';
 import { scaleTextStyle } from '../services/prefs';
 import { useAppActive } from '../hooks/useAppActive';
@@ -89,14 +91,16 @@ function compactCount(n: number) {
 }
 
 function BarrageAvatar({ src, name }: { src?: string; name: string }) {
-  const uri = src ? mediaUrl(src) : undefined;
+  const raw = src ? mediaUrl(src) : undefined;
+  const isSvg = Boolean(raw) && /\.svg(\?|$)/i.test(raw as string);
+  const uri = useRemoteMedia(isSvg ? undefined : raw);
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [uri]);
+  useEffect(() => setFailed(false), [raw]);
   // 站内默认头像是 SVG，RN 的 Image 解码不了，要用 react-native-svg 渲染。
-  if (uri && !failed && /\.svg(\?|$)/i.test(uri)) {
+  if (raw && !failed && isSvg) {
     return (
       <View style={styles.barrageAvatarSvg}>
-        <SvgAvatar uri={uri} size={24} onError={() => setFailed(true)} />
+        <SvgAvatar uri={raw} size={24} onError={() => setFailed(true)} />
       </View>
     );
   }
@@ -533,6 +537,40 @@ export function ReplyReactSheet({
           </View>
         </View>
       </View>
+    </View>
+  );
+}
+
+/**
+ * 红包帖的卡片（官网 `.red-packet-card`）。
+ *
+ * 官网的领取方式是「回帖」：卡片里的「回帖要求」写明触发行为与最低字数，
+ * 合格回复后由服务端随机/按序发一份积分。App 只负责把状态显示清楚，
+ * 并把「回帖就能领」这件事讲明白 —— 不自己造一个「抢红包」按钮（官方没有）。
+ */
+export function TopicRedPacketCard({ redPacket }: { redPacket: TopicRedPacketDto }) {
+  const tone = redPacket.state === 'open' ? 'danger' : 'default';
+  return (
+    <View style={styles.widgetCard}>
+      <View style={styles.widgetHead}>
+        <View style={styles.widgetHeadText}>
+          <Text style={styles.widgetKicker}>{redPacket.title}</Text>
+          <CompactTag tone={tone}>{redPacket.status}</CompactTag>
+        </View>
+        {redPacket.remaining ? <Text style={styles.widgetSide}>{redPacket.remaining}</Text> : null}
+      </View>
+      {redPacket.cells.length ? (
+        <View style={styles.widgetGrid}>
+          {redPacket.cells.map((cell) => (
+            <View key={`${cell.label}-${cell.value}`} style={styles.widgetGridCell}>
+              <Text style={styles.widgetGridLabel}>{cell.label}</Text>
+              <Text style={styles.widgetGridValue}>{cell.value}</Text>
+              {cell.note ? <Text style={styles.widgetGridNote}>{cell.note}</Text> : null}
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {redPacket.rule ? <Text style={styles.widgetMeta}>{redPacket.rule}</Text> : null}
     </View>
   );
 }
@@ -1011,6 +1049,12 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
    * 解出来一次用完就作废（capNonce 让组件重新挂载拿新题）。
    */
   const [capToken, setCapToken] = useState<string | null>(null);
+  // 红包帖：卡片里的「回帖要求」那格就是领取门槛（例如「不少于 30 个字」）
+  const redPacket = detail.data?.redPacket ?? null;
+  const topicHasRedPacket = Boolean(redPacket);
+  const redPacketNeed = redPacket && redPacket.state === 'open'
+    ? redPacket.cells.find((cell) => /回帖|回复/.test(cell.label)) ?? null
+    : null;
   const [capNonce, setCapNonce] = useState(0);
   const replyCaptcha = detail.data?.replyCaptcha === true;
   const [commentMenu, setCommentMenu] = useState<SheetItem[] | null>(null);
@@ -1182,6 +1226,42 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     return mapUser(await api.user(dto.authorId));
   }, [dto?.authorId]);
   const author = authorQuery.data;
+  /**
+   * 红包帖的领取动作就是「回帖」。
+   *
+   * 官网在回帖表单里挂了一个 `data-red-packet-status-url`，回帖成功后拿它换回新的
+   * `panel_html`（`/red_packet_status?topic_id=…`）—— 我们照做：回帖成功后刷新卡片。
+   * 发不发红包是服务端在回帖那一刻定的，金额不一定出现在回帖响应里，所以认不到奖励时
+   * 再拉一次该楼层（官网就是这么把「+N」标在楼层上的），认到才提示，认不到就安静刷新。
+   */
+  const settleRedPacket = async (commentId: string, immediate?: CommentDto['redPacket']) => {
+    if (!topicHasRedPacket) return;
+    try {
+      const status = await api.redPacketStatus(topic.id);
+      if (status.card) {
+        detail.setData((prev) => (prev ? { ...prev, redPacket: status.card } : prev));
+      }
+    } catch {
+      /* 卡片没刷到就保留原样，不影响回帖本身 */
+    }
+    if (immediate && immediate.points > 0) {
+      nav.toast(immediate.tip || `红包奖励 +${immediate.points} 积分`);
+      return;
+    }
+    if (immediate) return;
+    try {
+      const page = await api.comments(topic.id, null, commentId);
+      const mine = page.items.find((item) => item.id === commentId)?.redPacket ?? null;
+      if (!mine) return;
+      commentsQuery.setData((prev) => (prev
+        ? { ...prev, items: prev.items.map((item) => (item.id === commentId ? { ...item, redPacket: mine } : item)) }
+        : prev));
+      if (mine.points > 0) nav.toast(mine.tip || `红包奖励 +${mine.points} 积分`);
+    } catch {
+      /* 认领结果拿不到就等下次刷新 */
+    }
+  };
+
   const requireLogin = () => {
     if (nav.loggedIn) return true;
     nav.open({ name: 'login' });
@@ -1589,6 +1669,19 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
               <Icon name="ellipsis-horizontal" size={16} color={C.dim} />
             </Pressable>
           </View>
+          {/* 红包帖里领到红包的楼层：官方挂「+N」奖励标记，点它看说明 */}
+          {item.redPacket && (item.redPacket.points > 0 || item.redPacket.tip) ? (
+            <View style={styles.commentEssenceTag}>
+              <Pressable
+                onPress={() => nav.toast(item.redPacket?.tip || `红包奖励 +${item.redPacket?.points ?? 0} 积分`)}
+                hitSlop={6}
+              >
+                <CompactTag tone="danger">
+                  {item.redPacket.points > 0 ? `红包 +${item.redPacket.points}` : '红包奖励'}
+                </CompactTag>
+              </Pressable>
+            </View>
+          ) : null}
           {/* 竞猜理由是以「评议回帖」发布的，官方会打上「精华竞猜 · 预测会不会加精」标签 */}
           {item.essenceLabel ? (
             <View style={styles.commentEssenceTag}>
@@ -1818,6 +1911,9 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
             onUser={(id) => nav.openUser(id)}
           />
         ) : null}
+        {detail.data?.redPacket ? (
+          <TopicRedPacketCard redPacket={detail.data.redPacket} />
+        ) : null}
         {detail.data?.virtualCard ? (
           <TopicVirtualCard
             card={detail.data.virtualCard}
@@ -2021,6 +2117,15 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
             <Icon name="close" size={12} color={C.muted} />
           </Pressable>
         ) : null}
+        {/* 红包帖：官方把领取门槛写在卡片上，回复框这里也得说清楚，否则用户不知道为什么要凑字数 */}
+        {nav.loggedIn && redPacketNeed ? (
+          <View style={styles.commentAward}>
+            <CompactTag tone="danger">红包帖</CompactTag>
+            <Text style={styles.commentAwardText}>
+              {`${redPacketNeed.value || redPacketNeed.note}${redPacketNeed.note && redPacketNeed.value ? `（${redPacketNeed.note}）` : ''}，合格回复领取积分红包`}
+            </Text>
+          </View>
+        ) : null}
         {/* 抽奖帖且作者保留「回帖需要验证码」时，官方会在回帖框上方挂 Cap 验证组件 */}
         {nav.loggedIn && replyCaptcha ? (
           <View style={styles.commentCaptcha}>
@@ -2136,6 +2241,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
                   nav.toast('评论已发布');
                   nav.patchMe({ replyCount: nav.me.replyCount + 1 });
                   void nav.refreshMe();
+                  void settleRedPacket(filled.id, created.redPacket);
                 } catch (err) {
                   nav.toast(err instanceof ApiError ? err.message : '评论失败');
                 } finally {

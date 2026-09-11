@@ -45,6 +45,7 @@ import type {
   TopicEditorDto,
   TopicComposeInput,
   TopicCollectionPickDto,
+  TopicRedPacketDto,
   TopicVirtualCardDto,
   UploadDto,
   UserDto,
@@ -52,7 +53,10 @@ import type {
 import { formatRelative } from '../utils/time';
 import { FEED_TABS, LEADERBOARD_TABS } from '../data/feed-nav';
 import { apiRequest } from './client';
-import { clearSession, getRefreshToken, setSession } from './session';
+import { clearSession, getRefreshToken, markSignedOut, setSession } from './session';
+import { cookiesForToken } from './site-session';
+import { clearLinuxCookies, writeLinuxCookies } from '../utils/site-cookies';
+import { syncNotifySession } from 'linux-notify';
 
 // 与首页 tab 单一来源：src/data/feed-nav.ts
 const SORT_MAP: Record<string, FeedSort> = Object.fromEntries(
@@ -159,9 +163,10 @@ export function mapNotification(dto: NotificationDto): MessageItem {
 }
 
 export const api = {
-  login: async (input: { username: string; password?: string; provider?: 'github' | 'google'; captchaToken?: string; oauthCookies?: string }) => {
+  login: async (input: { username?: string; password?: string; provider?: 'github' | 'google'; captchaToken?: string; oauthCookies?: string }) => {
     const session = await apiRequest<SessionDto>('POST', '/auth/login', { body: input, auth: false });
     setSession(session.token, session.refreshToken);
+    void writeLinuxCookies(cookiesForToken(session.token) ?? '');
     return session;
   },
   register: async (input: { username: string; password: string; email: string; inviteCode?: string; emailCode: string; captchaToken?: string }) => {
@@ -177,10 +182,16 @@ export const api = {
     return session;
   },
   logout: async () => {
+    markSignedOut();
     try {
       await apiRequest<{ ok: boolean }>('POST', '/auth/logout');
     } finally {
-      clearSession();
+      await clearSession();
+      syncNotifySession('');
+      await clearLinuxCookies();
+      setTimeout(() => {
+        void clearLinuxCookies();
+      }, 1500);
     }
   },
   captcha: () => apiRequest<CaptchaChallengeDto>('GET', '/auth/captcha', { auth: false }),
@@ -248,6 +259,12 @@ export const api = {
       `/topics/${encodeURIComponent(topicId)}/comments/${encodeURIComponent(commentId)}/react`,
       { body: { points } },
     ),
+  /**
+   * 回帖后刷新红包卡片：走官网回帖框里的 `data-red-packet-status-url`
+   * （`/red_packet_status?topic_id=<id>` → `{ok, panel_html}`）。
+   */
+  redPacketStatus: (id: string) =>
+    apiRequest<{ ok: boolean; card: TopicRedPacketDto | null }>('GET', `/topics/${encodeURIComponent(id)}/red-packet`),
   buyVirtualCard: (id: string, quantity = 1) =>
     apiRequest<{ ok: boolean; message: string; card: TopicVirtualCardDto | null }>('POST', `/topics/${encodeURIComponent(id)}/virtual-card`, {
       body: { quantity },

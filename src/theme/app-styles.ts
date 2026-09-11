@@ -303,6 +303,9 @@ export function createAppStyles(C: Palette) {
     paddingBottom: 10,
   },
   commentCaptchaTitle: { color: C.text, fontSize: 12, fontWeight: '700' },
+  /** 红包帖的回帖要求（「不少于 N 个字」），挂在回帖框上方 */
+  commentAward: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  commentAwardText: { color: C.muted, fontSize: 12, lineHeight: 17, flexShrink: 1 },
   // 私信输入栏复用评论区回帖框的骨架，只多一个超长提示
   dmCounter: { color: C.dim, fontSize: 11 },
   emojiCell: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
@@ -1317,6 +1320,12 @@ export function createAppStyles(C: Palette) {
   topicAlbumBtnText: { color: C.text, fontSize: 12, fontWeight: '700' },
   topicAlbumLink: { color: C.muted, fontSize: 12, fontWeight: '700' },
   widgetCard: { marginTop: 16, padding: 12, borderRadius: 10, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, gap: 8 },
+  /** 红包卡片：官网是三列信息格，窄屏自动换行成两列/一列 */
+  widgetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  widgetGridCell: { flexGrow: 1, flexBasis: '30%', minWidth: 0, gap: 3, padding: 10, borderRadius: 8, backgroundColor: C.canvas, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line },
+  widgetGridLabel: { color: C.muted, fontSize: 11 },
+  widgetGridValue: { color: C.text, fontSize: 13, fontWeight: '700' },
+  widgetGridNote: { color: C.muted, fontSize: 11, lineHeight: 15 },
   widgetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   widgetHeadText: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 },
   widgetKicker: { color: C.text, fontSize: 14, fontWeight: '700' },

@@ -2,6 +2,7 @@ import React from 'react';
 import { Modal, Pressable, Switch, Text, TextInput, View } from 'react-native';
 import type {
   TopicLotteryComposeDto,
+  TopicRedPacketComposeDto,
   TopicLotteryPrizeInputDto,
   TopicSpecialType,
   TopicVirtualCardComposeDto,
@@ -14,6 +15,7 @@ const TYPE_CARDS: { value: TopicSpecialType; title: string; copy: string }[] = [
   { value: '', title: '普通帖', copy: '发布普通讨论主题' },
   { value: 'lottery', title: '抽奖帖', copy: '用户回帖参与抽奖！' },
   { value: 'virtual_card', title: '发卡帖', copy: '用户用积分或烧饼兑换卡密' },
+  { value: 'red_packet', title: '红包帖', copy: '用户合格回复后领取积分红包' },
 ];
 
 function pad(value: number) {
@@ -103,15 +105,22 @@ export function TopicTypePicker({
   specialType,
   hasLottery,
   hasCard,
+  hasRedPacket,
   onSelect,
 }: {
   specialType: TopicSpecialType;
   hasLottery: boolean;
   hasCard: boolean;
+  hasRedPacket: boolean;
   onSelect: (value: TopicSpecialType) => void;
 }) {
-  if (!hasLottery && !hasCard) return null;
-  const items = TYPE_CARDS.filter((item) => item.value === '' || (item.value === 'lottery' ? hasLottery : hasCard));
+  if (!hasLottery && !hasCard && !hasRedPacket) return null;
+  const items = TYPE_CARDS.filter((item) => {
+    if (item.value === '') return true;
+    if (item.value === 'lottery') return hasLottery;
+    if (item.value === 'virtual_card') return hasCard;
+    return hasRedPacket;
+  });
   return (
     <View style={styles.composeSection}>
       <Text style={styles.composeSectionTitle}>主题类型</Text>
@@ -274,6 +283,114 @@ export function LotteryFields({
           </View>
         );
       })}
+    </View>
+  );
+}
+
+/**
+ * 红包帖的表单（对应官网发帖页的 `.red-packet-compose`）。
+ *
+ * 官网的限值来自 `data-red-packet-*`（单份 50–1000 积分、总额至少 500），
+ * 这里只做即时校验与花费预估，最终仍以服务端为准。
+ */
+export function RedPacketFields({
+  redPacket,
+  onChange,
+  onLink,
+}: {
+  redPacket: TopicRedPacketComposeDto;
+  onChange: (next: TopicRedPacketComposeDto) => void;
+  onLink: (href: string) => void;
+}) {
+  const isRandom = redPacket.distribution === 'random';
+  const pieces = Math.max(1, Number.parseInt(redPacket.count, 10) || 1);
+  const unit = Math.max(0, Number.parseInt(redPacket.fixedAmount, 10) || 0);
+  const total = Math.max(0, Number.parseInt(redPacket.totalAmount, 10) || 0);
+  const cost = isRandom ? total : pieces * unit;
+  const minUnit = redPacket.minUnit > 0 ? redPacket.minUnit : 1;
+  const maxUnit = redPacket.maxUnit > 0 ? redPacket.maxUnit : minUnit;
+  const minTotal = Math.max(pieces * minUnit, redPacket.minTotal > 0 ? redPacket.minTotal : 1);
+  const after = redPacket.points - cost;
+  const tooLittle = cost > 0 && cost > redPacket.points;
+  const totalHint = `随机金额红包按总额发放：至少 ${minTotal} 积分，最多 ${maxUnit * pieces} 积分。`;
+  return (
+    <View style={styles.composePanel}>
+      <PublishWarning href={redPacket.reviewUrl} onLink={onLink} />
+      <Field label="红包类型" hint="固定金额：每份一样多；随机金额：按总额随机拆分。">
+        <View style={styles.composeChipWrap}>
+          {([
+            { value: 'fixed', label: '固定金额红包' },
+            { value: 'random', label: '随机金额红包' },
+          ] as const).map((item) => (
+            <Pressable
+              key={item.value}
+              onPress={() => onChange({ ...redPacket, distribution: item.value })}
+              style={[styles.composeMiniChip, redPacket.distribution === item.value && styles.composeMiniChipOn]}
+            >
+              <Text style={[styles.composeMiniChipText, redPacket.distribution === item.value && styles.composeMiniChipTextOn]}>
+                {item.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </Field>
+      <Field label="领取规则" hint="先到先得：合格回复按顺序发完为止；随机获得：每人只有一次机会，按概率发放。">
+        <View style={styles.composeChipWrap}>
+          {([
+            { value: 'first_come', label: '先到先得' },
+            { value: 'random_chance', label: '随机获得' },
+          ] as const).map((item) => (
+            <Pressable
+              key={item.value}
+              onPress={() => onChange({ ...redPacket, claimRule: item.value })}
+              style={[styles.composeMiniChip, redPacket.claimRule === item.value && styles.composeMiniChipOn]}
+            >
+              <Text style={[styles.composeMiniChipText, redPacket.claimRule === item.value && styles.composeMiniChipTextOn]}>
+                {item.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </Field>
+      <Field label="最低回复字数" hint="可设置 5 至 50 个字；不足字数的回帖领不到红包。">
+        <TextInput
+          value={redPacket.minReplyChars}
+          onChangeText={(minReplyChars) => onChange({ ...redPacket, minReplyChars })}
+          keyboardType="number-pad"
+          style={styles.composeInput}
+        />
+      </Field>
+      <Field label="红包份数" hint="1 至 1000 份，发帖人不能领取，同一用户只能领取一次。">
+        <TextInput
+          value={redPacket.count}
+          onChangeText={(count) => onChange({ ...redPacket, count })}
+          keyboardType="number-pad"
+          style={styles.composeInput}
+        />
+      </Field>
+      {isRandom ? (
+        <Field label="红包总额" hint={totalHint}>
+          <TextInput
+            value={redPacket.totalAmount}
+            onChangeText={(totalAmount) => onChange({ ...redPacket, totalAmount })}
+            keyboardType="number-pad"
+            style={styles.composeInput}
+          />
+        </Field>
+      ) : (
+        <Field label="单个红包" hint={`每份 ${minUnit} 至 ${maxUnit} 积分。`}>
+          <TextInput
+            value={redPacket.fixedAmount}
+            onChangeText={(fixedAmount) => onChange({ ...redPacket, fixedAmount })}
+            keyboardType="number-pad"
+            style={styles.composeInput}
+          />
+        </Field>
+      )}
+      <Text style={styles.composeWalletNote}>
+        {`积分余额 ${redPacket.points}，本次总消耗 ${cost}，发布后余额 ${after}。`}
+        {tooLittle ? ' 余额不足，请先获取积分。' : ''}
+      </Text>
     </View>
   );
 }

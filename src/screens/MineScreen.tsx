@@ -9,6 +9,7 @@ import { TitleBadges } from '../components/TitleBadge';
 import { UserAvatar } from '../components/ui';
 import { C, registerStyleSync, type Palette } from '../theme/palette';
 import { nutThemeFor } from '../theme/nut-mine';
+import { APP_NAME, APP_VERSION } from '../data/app-info';
 
 const HERO_BG = require('../../assets/mine-hero.png');
 
@@ -225,7 +226,8 @@ function MineBody(props: MineActions) {
             <Cell title="登录账号" isLink center onClick={props.onLogin} />
           )}
         </View>
-        <Text style={styles.version}>LINUX SB · v0.1.4</Text>
+        {/* 版本号只有 app.json 一个来源（src/data/app-info.ts），这里以前写死成 v0.1.4 */}
+        <Text style={styles.version}>{`${APP_NAME} · v${APP_VERSION}`}</Text>
       </View>
     </ScrollView>
   );

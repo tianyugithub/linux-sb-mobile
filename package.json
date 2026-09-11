@@ -23,6 +23,7 @@
     "check:hot": "node scripts/run-stubbed.mjs scripts/check-hot-topics.ts",
     "check:update": "node scripts/run-stubbed.mjs scripts/check-update.ts",
     "check:access": "npx tsx scripts/check-access.ts",
+    "check:redpacket": "node scripts/run-stubbed.mjs scripts/check-redpacket.ts",
     "check:captcha": "node scripts/run-stubbed.mjs scripts/check-captcha.ts",
     "check:helper": "npx tsx scripts/check-helper.ts",
     "check:code": "npx tsx scripts/check-code.ts",
