@@ -11,7 +11,7 @@ import { applyScheme, C } from './src/theme/palette';
 import { styles } from './src/theme/app-styles';
 import { api, mapUser } from './src/services/api';
 import { ApiError } from './src/services/client';
-import { getAccessToken, hydrateSession } from './src/services/session';
+import { getAccessToken, hydrateSession, markSignedOut } from './src/services/session';
 import { pollAndNotify, rememberUnread, setPushHooks, startPushRuntime } from './src/services/push';
 import { sessionForToken, updateUpstreamUser } from './src/services/site-session';
 import { cacheClear, cacheDelete, preloadQueryCache } from './src/services/query-cache';
@@ -19,6 +19,7 @@ import { resetOfficialUploadCapability } from './src/services/r2-config';
 import { bustUnreadCount } from './src/services/live';
 import { classifyAppHref, resolveAppHref } from './src/utils/links';
 import { githubBrowseUrl } from './src/utils/github-access';
+import { viaAccess } from './src/utils/linux-access';
 import { checkForUpdate, updatePromptText } from './src/services/app-update';
 import { downloadAndInstallUpdate, rememberSkippedUpdate, wasUpdateSkipped } from './src/services/app-install';
 import { hydrateTopicSeen } from './src/utils/topic-seen';
@@ -279,9 +280,15 @@ function AppRoot() {
       setSessionReady(true);
       bootedRef.current = true;
     };
+    /**
+     * 兜底：恢复会话本身要是卡住（SecureStore / 原生模块偶发不回调），
+     * 也不能让「未完成启动」一直挂着 —— 消息页、私信页的骨架与「同步中…」都看这个标记。
+     * 游客态尤其明显：他们本来就没有会话可恢复，没有任何理由等。
+     */
+    const watchdog = setTimeout(finishBoot, 2500);
     (async () => {
-      preloadQueryCache();
       try {
+        preloadQueryCache();
         await hydrateTopicSeen();
         await hydrateSession();
         void startPushRuntime();
@@ -304,6 +311,7 @@ function AppRoot() {
     })();
     return () => {
       cancelled = true;
+      clearTimeout(watchdog);
     };
   }, [refreshMe]);
 
@@ -389,7 +397,7 @@ function AppRoot() {
       });
     },
     openWeb: (url, title) => {
-      const abs = githubBrowseUrl(resolveAppHref(url) ?? url);
+      const abs = viaAccess(githubBrowseUrl(resolveAppHref(url) ?? url));
       setStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;
@@ -402,7 +410,7 @@ function AppRoot() {
         openAppHref(next, url);
         return;
       }
-      const abs = githubBrowseUrl(action.type === 'browser' ? action.url : (resolveAppHref(url) ?? url));
+      const abs = viaAccess(githubBrowseUrl(action.type === 'browser' ? action.url : (resolveAppHref(url) ?? url)));
       setStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;
@@ -464,13 +472,18 @@ function AppRoot() {
       }
     },
     signOut: async () => {
-      await api.logout();
+      markSignedOut();
       setMe(guest);
       resetAccountCaches();
       setCheckedIn(false);
       setUnread(0);
       void rememberUnread(0);
       setStack([]);
+      try {
+        await api.logout();
+      } catch {
+        /* 本地已经按游客显示，官网退出失败不挡 */
+      }
     },
     checkedIn,
     checkIn: async () => {
@@ -504,7 +517,16 @@ function AppRoot() {
     setUnread,
     };
     return next;
-  }, [me, checkedIn, unread, refreshMe]);
+    /*
+     * sessionReady 必须在依赖里：它只喂 nav 的同名字段。
+     *
+     * 踩过的坑：游客态启动时 me 本来就是模块常量 `guest`，`setMe(guest)` 是同一个引用，
+     * React 直接 bail out；这一轮**唯一**变化的状态就是 setSessionReady(true)。
+     * 少了这个依赖，nav 就不会重算，nav.sessionReady 永远停在 false ——
+     * 消息页 / 私信页于是永远显示「同步中…」+ 骨架，游客等不到「登录后查看」。
+     * 登录用户碰巧不出问题：refreshMe 会改 me，顺带把整个 memo 重算了一遍，所以只坑游客。
+     */
+  }, [me, checkedIn, unread, refreshMe, sessionReady]);
 
   const switchTab = (key: typeof tab) => {
     setStack([]);
