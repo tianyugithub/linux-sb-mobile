@@ -173,6 +173,7 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
     placeholder: '分享你的想法、经验或资源…',
     onLink: (href) => openAppHref(nav, href),
     docked: true,
+    replyVisible: true,
     onPickImageFile: () => pickPostImages({ me: nav.me, toast: nav.toast }),
     onUploadImageFile: (file, onProgress, target) => uploadPostImageFile(file, { toast: nav.toast, onProgress, silent: true, target }),
   });

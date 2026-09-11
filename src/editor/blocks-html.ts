@@ -1,4 +1,4 @@
-import { VIDEO_LABEL, escapeHtml, spansToHtml, type ArticleBlock } from '../utils/article';
+import { REPLY_VISIBLE_LABEL, VIDEO_LABEL, escapeHtml, spansToHtml, type ArticleBlock } from '../utils/article';
 
 /**
  * ArticleBlock → HTML，供所见即所得视图（WebView）渲染。
@@ -68,6 +68,18 @@ function blockHtml(block: ArticleBlock): string {
   if (block.type === 'table') return tableHtml(block);
   if (block.type === 'hr') return '<hr>';
   if (block.type === 'spacer') return '<div class="lsb-spacer"></div>';
+  if (block.type === 'reply_visible') {
+    if (block.locked) {
+      return `<section class="nb-editor-reply-visible nb-editor-reply-visible-locked">`
+        + `<div class="nb-editor-reply-visible-notice"><span aria-hidden="true">🔒</span>`
+        + `<div><strong>${escapeHtml(block.label)}</strong>`
+        + `<span>${escapeHtml(block.notice)}</span></div></div></section>`;
+    }
+    const label = escapeHtml(block.label || REPLY_VISIBLE_LABEL);
+    return `<section class="nb-editor-reply-visible nb-editor-reply-visible-open">`
+      + `<div class="nb-editor-reply-visible-label">${label}</div>`
+      + `${blocksToHtml(block.blocks)}</section>`;
+  }
   return '';
 }
 

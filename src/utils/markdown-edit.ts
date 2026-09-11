@@ -40,6 +40,15 @@ export function insertBlock(value: string, caret: Caret, block: string, selectSt
   return replaceRange(value, start, end, insert, head.length + selectStart, head.length + selectEnd);
 }
 
+/** 官网 plugins.js `insertReplyVisible`：选中文字作内容，插完后选中块内正文。 */
+export function insertReplyVisible(value: string, caret: Caret, content: string) {
+  const body = content.trim();
+  if (!body) return { value, caret: clampCaret(value, caret) };
+  const prefix = '[回复可见]\n';
+  const block = `${prefix}${body}\n[/回复可见]\n`;
+  return insertBlock(value, caret, block, prefix.length, prefix.length + body.length);
+}
+
 export function insertAtCaret(value: string, caret: Caret, snippet: string) {
   const { start, end } = clampCaret(value, caret);
   return replaceRange(value, start, end, snippet, snippet.length, snippet.length);

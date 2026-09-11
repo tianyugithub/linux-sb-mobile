@@ -24,7 +24,27 @@ export type ArticleBlock =
   | { type: 'table'; headers: InlineSpan[][]; rows: InlineSpan[][][]; aligns: TableAlign[] }
   | { type: 'video'; provider: VideoProvider; embed: string; url: string }
   | { type: 'spacer' }
-  | { type: 'hr' };
+  | { type: 'hr' }
+  /**
+   * 官网「回复可见」区块（编辑器 `[回复可见]…[/回复可见]`）。
+   * 锁定态由服务端渲染，解锁后才有 inner blocks。
+   */
+  | {
+    type: 'reply_visible';
+    locked: boolean;
+    label: string;
+    notice: string;
+    blocks: ArticleBlock[];
+  };
+
+/** 官网插入语法（plugins.js `insertReplyVisible`）。 */
+export const REPLY_VISIBLE_OPEN = '[回复可见]';
+export const REPLY_VISIBLE_CLOSE = '[/回复可见]';
+/** 解锁后区块标题（`.nb-editor-reply-visible-label`）。 */
+export const REPLY_VISIBLE_LABEL = '回复可见内容';
+/** 锁定态标题 / 说明（`.nb-editor-reply-visible-notice`）。 */
+export const REPLY_VISIBLE_LOCKED_TITLE = '回复后可见';
+export const REPLY_VISIBLE_LOCKED_HINT = '回复本主题后即可查看这部分内容。';
 
 /** 与官方 nb_editor 一致的三种视频来源。 */
 export type VideoProvider = 'youtube' | 'bilibili' | 'douyin';
@@ -109,6 +129,9 @@ function parseVideoEmbed(inner: string, tag: string): ArticleBlock | null {
 /** 只有「[YouTube视频](url)」这种整段单链接才算视频（与官方编辑器一致） */
 function promoteVideoLinks(blocks: ArticleBlock[]): ArticleBlock[] {
   return blocks.map((block) => {
+    if (block.type === 'reply_visible') {
+      return { ...block, blocks: promoteVideoLinks(block.blocks) };
+    }
     if (block.type !== 'p' || block.spans.length !== 1) return block;
     const span = block.spans[0];
     if (span.type !== 'link') return block;
@@ -521,12 +544,38 @@ function pushList(blocks: ArticleBlock[], inner: string, ordered: boolean) {
   images.forEach((image) => blocks.push(image));
 }
 
+function parseReplyVisibleHtml(openTag: string, inner: string): ArticleBlock {
+  const locked = /nb-editor-reply-visible-locked/.test(openTag);
+  if (locked) {
+    const title = decodeEntities(stripKeepText(inner.match(/<strong\b[^>]*>([\s\S]*?)<\/strong>/i)?.[1] || '')).trim()
+      || REPLY_VISIBLE_LOCKED_TITLE;
+    const notice = decodeEntities(stripKeepText(
+      inner.match(/<strong\b[^>]*>[\s\S]*?<\/strong>\s*<span\b[^>]*>([\s\S]*?)<\/span>/i)?.[1] || '',
+    )).trim() || REPLY_VISIBLE_LOCKED_HINT;
+    return { type: 'reply_visible', locked: true, label: title, notice, blocks: [] };
+  }
+  const label = decodeEntities(stripKeepText(
+    inner.match(/nb-editor-reply-visible-label[^>]*>([\s\S]*?)<\/div>/i)?.[1] || '',
+  )).trim() || REPLY_VISIBLE_LABEL;
+  const body = inner
+    .replace(/<div\b[^>]*class="[^"]*nb-editor-reply-visible-label[^"]*"[^>]*>[\s\S]*?<\/div>/i, '')
+    .replace(/<div\b[^>]*class="[^"]*nb-editor-reply-visible-notice[^"]*"[^>]*>[\s\S]*?<\/div>/i, '')
+    .replace(/<\/?div\b[^>]*class="[^"]*nb-editor-reply-visible-body[^"]*"[^>]*>/gi, '');
+  return {
+    type: 'reply_visible',
+    locked: false,
+    label,
+    notice: '',
+    blocks: parseHtmlArticle(body),
+  };
+}
+
 function parseHtmlArticle(html: string): ArticleBlock[] {
   const cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '');
   const blocks: ArticleBlock[] = [];
-  const re = /<(p|h[1-6]|ul|ol|blockquote|pre|table|hr|figure)\b[^>]*>|<img\b[^>]*>|<iframe\b[^>]*>|<div\b[^>]*class=["'][^"']*(?:markdown-table-wrap|nb-editor-blank-spacer|nb-editor-youtube|nb-editor-bilibili|nb-editor-douyin)[^"']*["'][^>]*>/gi;
+  const re = /<(p|h[1-6]|ul|ol|blockquote|pre|table|hr|figure)\b[^>]*>|<img\b[^>]*>|<iframe\b[^>]*>|<section\b[^>]*class=["'][^"']*nb-editor-reply-visible[^"']*["'][^>]*>|<div\b[^>]*class=["'][^"']*(?:markdown-table-wrap|nb-editor-blank-spacer|nb-editor-youtube|nb-editor-bilibili|nb-editor-douyin)[^"']*["'][^>]*>/gi;
   let last = 0;
   let hit: RegExpExecArray | null;
   while ((hit = re.exec(cleaned))) {
@@ -543,6 +592,13 @@ function parseHtmlArticle(html: string): ArticleBlock[] {
     if (/^<hr\b/i.test(hit[0])) {
       blocks.push({ type: 'hr' });
       last = hit.index + hit[0].length;
+      continue;
+    }
+    if (/^<section\b/i.test(hit[0])) {
+      const extracted = extractBalanced(cleaned, hit.index, 'section');
+      blocks.push(parseReplyVisibleHtml(hit[0], extracted.inner));
+      last = extracted.end;
+      re.lastIndex = last;
       continue;
     }
     const tag = (hit[1] || 'div').toLowerCase();
@@ -713,6 +769,28 @@ function emitMarkdownParagraph(blocks: ArticleBlock[], paragraph: string) {
 
 function parseMarkdownArticle(source: string): ArticleBlock[] {
   const blocks: ArticleBlock[] = [];
+  const re = /\[回复可见\][ \t]*\r?\n?([\s\S]*?)\[\/回复可见\]/g;
+  let last = 0;
+  let hit: RegExpExecArray | null;
+  while ((hit = re.exec(source))) {
+    const before = source.slice(last, hit.index);
+    parseMarkdownFenced(before).forEach((block) => blocks.push(block));
+    const inner = (hit[1] || '').replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+    blocks.push({
+      type: 'reply_visible',
+      locked: false,
+      label: REPLY_VISIBLE_LABEL,
+      notice: '',
+      blocks: inner.trim() ? parseMarkdownArticle(inner) : [],
+    });
+    last = hit.index + hit[0].length;
+  }
+  parseMarkdownFenced(source.slice(last)).forEach((block) => blocks.push(block));
+  return blocks;
+}
+
+function parseMarkdownFenced(source: string): ArticleBlock[] {
+  const blocks: ArticleBlock[] = [];
   const chunks = source.split(/```/);
   chunks.forEach((chunk, index) => {
     if (index % 2 === 1) {
@@ -842,6 +920,12 @@ export function blocksToMarkdown(blocks: ArticleBlock[]): string {
       push('---');
       continue;
     }
+    if (block.type === 'reply_visible') {
+      if (block.locked) continue;
+      const inner = blocksToMarkdown(block.blocks);
+      push(`${REPLY_VISIBLE_OPEN}\n${inner}\n${REPLY_VISIBLE_CLOSE}`);
+      continue;
+    }
   }
   flushImages();
   return chunks.join('\n\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
@@ -890,7 +974,11 @@ function coalesceMarkdownTables(blocks: ArticleBlock[]): ArticleBlock[] {
     out.push(block);
     i += 1;
   }
-  return out;
+  return out.map((block) => (
+    block.type === 'reply_visible'
+      ? { ...block, blocks: coalesceMarkdownTables(block.blocks) }
+      : block
+  ));
 }
 
 export function parseArticle(raw: string): ArticleBlock[] {
@@ -928,12 +1016,32 @@ export function uniqueImages(srcs: string[]): string[] {
   return out;
 }
 
+export function articleImageSrcs(blocks: ArticleBlock[]): string[] {
+  const out: string[] = [];
+  for (const block of blocks) {
+    if (block.type === 'image') out.push(block.src);
+    else if (block.type === 'reply_visible') out.push(...articleImageSrcs(block.blocks));
+  }
+  return out;
+}
+
 export function collectArticleImages(raw: string): string[] {
-  return uniqueImages(
-    parseArticle(raw ?? '')
-      .filter((block): block is Extract<ArticleBlock, { type: 'image' }> => block.type === 'image')
-      .map((block) => block.src),
-  );
+  return uniqueImages(articleImageSrcs(parseArticle(raw ?? '')));
+}
+
+/** 主题正文里还有未解锁的「回复可见」——回帖成功后要重拉主题页。 */
+export function hasLockedReplyVisible(raw: string): boolean {
+  return /nb-editor-reply-visible-locked/.test(raw ?? '');
+}
+
+function replyVisibleSectionToSource(tag: string): string {
+  if (/nb-editor-reply-visible-locked/.test(tag)) return '';
+  const inner = tag.replace(/^<section\b[^>]*>/i, '').replace(/<\/section>$/i, '');
+  const body = inner
+    .replace(/<div\b[^>]*class="[^"]*nb-editor-reply-visible-label[^"]*"[^>]*>[\s\S]*?<\/div>/i, '')
+    .replace(/<\/?div\b[^>]*class="[^"]*nb-editor-reply-visible-body[^"]*"[^>]*>/gi, '');
+  const md = htmlToSource(body).trim();
+  return md ? `\n${REPLY_VISIBLE_OPEN}\n${md}\n${REPLY_VISIBLE_CLOSE}\n` : '';
 }
 
 export function htmlToSource(raw: string): string {
@@ -943,6 +1051,7 @@ export function htmlToSource(raw: string): string {
     source
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<section\b[^>]*class="[^"]*nb-editor-reply-visible[^"]*"[^>]*>[\s\S]*?<\/section>/gi, replyVisibleSectionToSource)
       .replace(/<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_, attrs, code) => {
         const lang = String(attrs).match(/\b(?:language|lang)-([a-zA-Z0-9_+-]+)/i)?.[1] || '';
         return `\n\`\`\`${lang}\n${decodeEntities(code)}\n\`\`\`\n`;

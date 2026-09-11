@@ -7,7 +7,7 @@ import { mediaUrl } from '../services/client';
 import { useRemoteMedia } from '../hooks/useRemoteMedia';
 import { scaleTextStyle } from '../services/prefs';
 import { usePrefs } from '../hooks/usePrefs';
-import { VIDEO_LABEL, collectImageRun, hostOf, imageKey, parseArticle, spansToPlain, uniqueImages, type ArticleBlock, type InlineSpan, type TextAlign } from '../utils/article';
+import { VIDEO_LABEL, articleImageSrcs, collectImageRun, hostOf, imageKey, parseArticle, spansToPlain, uniqueImages, type ArticleBlock, type InlineSpan, type TextAlign } from '../utils/article';
 import { ImageGallery } from './ImageGallery';
 import { CodeBlock } from './CodeBlock';
 import { WebView } from 'react-native-webview';
@@ -352,7 +352,7 @@ export function ArticleBody({
 }) {
   const blocks = useMemo(() => parseArticle(text), [text]);
   const images = useMemo(
-    () => uniqueImages(blocks.filter((block): block is Extract<ArticleBlock, { type: 'image' }> => block.type === 'image').map((block) => block.src)),
+    () => uniqueImages(articleImageSrcs(blocks)),
     [blocks],
   );
   const siblings = gallerySrcs?.length ? uniqueImages(gallerySrcs) : images;
@@ -394,8 +394,105 @@ export function ArticleBody({
             setContentHeight((prev) => (height > prev ? height : prev));
           }}
         >
-        {blocks.map((block, index) => {
+        <ArticleBlocks
+          blocks={blocks}
+          compact={compact}
+          fontFactor={fontFactor}
+          textStyle={textStyle}
+          quoteStyle={quoteStyle}
+          siblings={siblings}
+          onCopy={onCopy}
+          onLink={onLink}
+          onSecret={onSecret}
+          openImage={openImage}
+        />
+        </View>
+        {collapsed ? (
+          <LinearGradient
+            colors={[C.fade, C.canvas]}
+            style={styles.articleFoldFade}
+            pointerEvents="none"
+          />
+        ) : null}
+      </View>
+      {overflows ? (
+        <Pressable onPress={() => setExpanded((value) => !value)} style={styles.articleExpand}>
+          <Text style={styles.articleExpandText}>{expanded ? '收起全文' : '展开全文'}</Text>
+          <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color={C.muted} />
+        </Pressable>
+      ) : null}
+      {gallery ? (
+        <ImageGallery
+          visible
+          uris={gallery.uris}
+          index={gallery.index}
+          onClose={() => setGallery(null)}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function ArticleBlocks({
+  blocks,
+  compact,
+  fontFactor,
+  textStyle,
+  quoteStyle,
+  siblings,
+  onCopy,
+  onLink,
+  onSecret,
+  openImage,
+}: {
+  blocks: ArticleBlock[];
+  compact?: boolean;
+  fontFactor: number;
+  textStyle: object;
+  quoteStyle: object;
+  siblings: string[];
+  onCopy: (value: string) => void;
+  onLink: (href: string, host: string) => void;
+  onSecret: () => void;
+  openImage: (src: string) => void;
+}) {
+  return (
+    <>
+      {blocks.map((block, index) => {
           const last = index === blocks.length - 1;
+          if (block.type === 'reply_visible') {
+            return (
+              <View key={index} style={[styles.replyVisible, last && styles.articlePLast]}>
+                {block.locked ? (
+                  <View style={styles.replyVisibleNotice}>
+                    <View style={styles.replyVisibleIcon}>
+                      <Icon name="lock-closed-outline" size={16} color={C.muted} />
+                    </View>
+                    <View style={styles.replyVisibleCopy}>
+                      <Text style={styles.replyVisibleTitle}>{block.label}</Text>
+                      {block.notice ? <Text style={styles.replyVisibleHint}>{block.notice}</Text> : null}
+                    </View>
+                  </View>
+                ) : (
+                  <>
+                    {block.label ? <Text style={styles.replyVisibleLabel}>{block.label}</Text> : null}
+                    <ArticleBlocks
+                      blocks={block.blocks}
+                      compact={compact}
+                      fontFactor={fontFactor}
+                      textStyle={textStyle}
+                      quoteStyle={quoteStyle}
+                      siblings={siblings}
+                      onCopy={onCopy}
+                      onLink={onLink}
+                      onSecret={onSecret}
+                      openImage={openImage}
+                    />
+                  </>
+                )}
+              </View>
+            );
+          }
           if (block.type === 'code') {
             return (
               <CodeBlock
@@ -490,29 +587,6 @@ export function ArticleBody({
             </View>
           );
         })}
-        </View>
-        {collapsed ? (
-          <LinearGradient
-            colors={[C.fade, C.canvas]}
-            style={styles.articleFoldFade}
-            pointerEvents="none"
-          />
-        ) : null}
-      </View>
-      {overflows ? (
-        <Pressable onPress={() => setExpanded((value) => !value)} style={styles.articleExpand}>
-          <Text style={styles.articleExpandText}>{expanded ? '收起全文' : '展开全文'}</Text>
-          <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color={C.muted} />
-        </Pressable>
-      ) : null}
-      {gallery ? (
-        <ImageGallery
-          visible
-          uris={gallery.uris}
-          index={gallery.index}
-          onClose={() => setGallery(null)}
-        />
-      ) : null}
-    </View>
+    </>
   );
 }

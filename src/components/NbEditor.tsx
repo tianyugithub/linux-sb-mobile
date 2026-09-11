@@ -43,6 +43,7 @@ import {
   insertHorizontalRule,
   insertImageMarkdowns,
   insertLink,
+  insertReplyVisible,
   insertTableMarkdown,
   prefixLines,
   wrapInline,
@@ -376,6 +377,7 @@ export function NbEditorBar({
   onCommand,
   onInsertLink,
   onVideo,
+  onReplyVisible,
   onFullscreen,
   fullscreen = false,
   snapshot,
@@ -396,6 +398,8 @@ export function NbEditorBar({
   onInsertLink?: () => void;
   /** 打开插入视频弹窗（官方行为：解析抖音/哔哩哔哩/YouTube 链接）。 */
   onVideo?: () => void;
+  /** 打开插入「回复可见」弹窗（官网发帖工具条 `reply_visible`；回帖框没有）。 */
+  onReplyVisible?: () => void;
   onFullscreen?: () => void;
   fullscreen?: boolean;
   /** 内核回传的选区状态，用于按钮高亮。 */
@@ -470,6 +474,9 @@ export function NbEditorBar({
   if (onVideo) tools.push(btn('视频', onVideo, ion('videocam-outline')));
   if (!compact) {
     tools.push(btn('表格', () => run('table', () => apply(insertTableMarkdown(live().value, live().caret))), ion('grid-outline')));
+    if (onReplyVisible) {
+      tools.push(btn('回复可见', onReplyVisible, ion('lock-closed-outline')));
+    }
     tools.push(btn('分隔线', () => run('hr', () => apply(insertHorizontalRule(live().value, live().caret))), glyph('—')));
   }
   if (onImage) {
@@ -700,6 +707,7 @@ export function useNbEditor({
   onFocus,
   onBlur,
   richText = 'always',
+  replyVisible = false,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -723,6 +731,11 @@ export function useNbEditor({
    *   'fullscreen' 极简的内联回复框不算富文本入口，只有全屏编辑里才给（用户要求：极简模式保持和以前一样）
    */
   richText?: 'always' | 'fullscreen';
+  /**
+   * 发帖页才有「回复可见」（官网 `data-nb-editor-action="reply_visible"`）。
+   * 回帖 / 私信工具条没有这个按钮。
+   */
+  replyVisible?: boolean;
 }) {
   const inputRef = useRef<TextInput>(null);
   const caretRef = useRef<Caret>({ start: value.length, end: value.length });
@@ -748,7 +761,7 @@ export function useNbEditor({
   const [fullscreen, setFullscreen] = useState(false);
   /** 全屏时编辑区的可视高度（`nbFullBody` 的实测高度，减掉内容区下内边距）。 */
   const [fullBodyH, setFullBodyH] = useState(0);
-  const [prompt, setPrompt] = useState<null | 'link' | 'video' | 'image'>(null);
+  const [prompt, setPrompt] = useState<null | 'link' | 'video' | 'image' | 'reply_visible'>(null);
   const [promptValue, setPromptValue] = useState('');
   const [promptSecond, setPromptSecond] = useState('');
   const [promptError, setPromptError] = useState('');
@@ -889,6 +902,14 @@ export function useNbEditor({
     setPrompt(kind);
   };
 
+  /** 官网 `insertReplyVisible`：弹窗预填当前选区，空内容不插入。 */
+  const openReplyVisible = () => {
+    setPromptError('');
+    setPromptValue(valueRef.current.slice(caretRef.current.start, caretRef.current.end).trim());
+    setPromptSecond('');
+    setPrompt('reply_visible');
+  };
+
   /** 代码模式写 markdown，富文本模式发内核命令，两种模式产出同一个链接。 */
   const insertLinkNode = (fallbackLabel: string, href: string) => {
     const caret = caretRef.current;
@@ -904,6 +925,15 @@ export function useNbEditor({
   const confirmPrompt = async () => {
     const raw = promptValue.trim();
     if (!raw || promptBusy) return;
+    if (prompt === 'reply_visible') {
+      if (modeRef.current === 'wysiwyg') {
+        richRef.current?.command('reply_visible', { html: blocksToHtml(parseEditableArticle(raw)) });
+      } else {
+        commit(insertReplyVisible(valueRef.current, caretRef.current, raw));
+      }
+      setPrompt(null);
+      return;
+    }
     if (prompt === 'video') {
       setPromptBusy(true);
       const video = await resolveVideoShare(raw);
@@ -961,6 +991,7 @@ export function useNbEditor({
       onCommand={mode === 'wysiwyg' ? (name, payload) => richRef.current?.command(name, payload) : undefined}
       onInsertLink={() => openPrompt('link')}
       onVideo={() => openPrompt('video')}
+      onReplyVisible={replyVisible ? openReplyVisible : undefined}
       onFullscreen={() => { void toggleFullscreen(); }}
       fullscreen={fullscreen}
       snapshot={mode === 'wysiwyg' ? snapshot : sourceState}
@@ -1076,13 +1107,15 @@ export function useNbEditor({
   const promptDialog = (
     <EditorPromptDialog
       open={prompt !== null}
-      title={prompt === 'video' ? '插入视频' : prompt === 'image' ? '插入图片' : '插入链接'}
+      title={prompt === 'video' ? '插入视频' : prompt === 'image' ? '插入图片' : prompt === 'reply_visible' ? '插入回复可见内容' : '插入链接'}
       hint={prompt === 'video'
         ? '粘贴抖音 / 哔哩哔哩 / YouTube 链接或整段分享文案，会自动识别平台。'
         : prompt === 'image'
           ? '填写图片地址与描述，效果与官方编辑器一致。'
-          : '选中文字会作为链接标题，否则用「链接文字」。'}
-      placeholder={prompt === 'video' ? 'https://www.bilibili.com/video/BV...' : 'https://'}
+          : prompt === 'reply_visible'
+            ? '回复后可见的内容（支持 Markdown）'
+            : '选中文字会作为链接标题，否则用「链接文字」。'}
+      placeholder={prompt === 'video' ? 'https://www.bilibili.com/video/BV...' : prompt === 'reply_visible' ? '支持 Markdown' : 'https://'}
       value={promptValue}
       error={promptError}
       busy={promptBusy}

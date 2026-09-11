@@ -11,6 +11,7 @@
 import {
   DOMSerializer,
   DOMParser as PMDOMParser,
+  Fragment,
   Schema,
   type Mark,
   type Node as PMNode,
@@ -116,6 +117,41 @@ const schema = new Schema({
       attrs: { textAlign: { default: null } },
       parseDOM: [{ tag: 'blockquote', getAttrs: (dom) => alignAttrs(dom as HTMLElement) }],
       toDOM: (node) => ['blockquote', alignDOM(node.attrs), 0],
+    },
+    reply_visible: {
+      content: 'block+',
+      group: 'block',
+      defining: true,
+      parseDOM: [
+        {
+          tag: 'section[class*="nb-editor-reply-visible-locked"]',
+          ignore: true,
+        },
+        {
+          tag: 'section[class*="nb-editor-reply-visible"]',
+          contentElement: (dom) => {
+            const el = dom as HTMLElement;
+            const body = el.querySelector('.nb-editor-reply-visible-body');
+            if (body) return body as HTMLElement;
+            const holder = el.ownerDocument.createElement('div');
+            Array.from(el.childNodes).forEach((child) => {
+              if (child.nodeType === 1) {
+                const klass = (child as HTMLElement).className || '';
+                if (/\bnb-editor-reply-visible-(?:label|notice|body)\b/.test(klass)) return;
+              }
+              holder.appendChild(child.cloneNode(true));
+            });
+            return holder;
+          },
+        },
+      ],
+      // 内容洞必须是其父节点的唯一子节点（ProseMirror 约束），所以正文套一层 body。
+      toDOM: () => [
+        'section',
+        { class: 'nb-editor-reply-visible nb-editor-reply-visible-open' },
+        ['div', { class: 'nb-editor-reply-visible-label', contenteditable: 'false' }, '回复可见内容'],
+        ['div', { class: 'nb-editor-reply-visible-body' }, 0],
+      ],
     },
     horizontal_rule: { group: 'block', parseDOM: [{ tag: 'hr' }], toDOM: () => ['hr'] },
     hard_break: {
@@ -842,6 +878,18 @@ export function mount(options: { tokens: Tokens; html: string; editable: boolean
         // 第二个参数 false：不要让光标处的 marks 覆盖链接标记
         view.dispatch(view.state.tr.replaceSelectionWith(schema.text(text, [schema.marks.link.create({ href })]), false).scrollIntoView());
         return true;
+      }
+      case 'reply_visible': {
+        const html = String(payload?.html || '').trim();
+        const inner = htmlToDoc(html || '<p></p>').content;
+        const content = inner.size ? inner : Fragment.from(schema.nodes.paragraph.create());
+        const node = schema.nodes.reply_visible.create(null, content);
+        if (!emptyBlock()) {
+          const target = topBlock();
+          if (!target) return false;
+          return finishInsert(view.state.tr, target.offset + target.node.nodeSize, node, '');
+        }
+        return finishInsert(view.state.tr, view.state.selection.from, node, '');
       }
       case 'text': {
         const text = String(payload?.text || '');

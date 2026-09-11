@@ -68,7 +68,7 @@ import {
   type DialogState,
   type SheetItem,
 } from '../components/ui';
-import { collectArticleImages, uniqueImages } from '../utils/article';
+import { collectArticleImages, hasLockedReplyVisible, uniqueImages } from '../utils/article';
 import { classifyAppHref } from '../utils/links';
 import { copyText, shareText } from '../utils/share';
 import { formatRelative } from '../utils/time';
@@ -2243,6 +2243,10 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
                   nav.patchMe({ replyCount: nav.me.replyCount + 1 });
                   void nav.refreshMe();
                   void settleRedPacket(filled.id, created.redPacket);
+                  // 官网回帖成功后重拉主题页，把 `.nb-editor-reply-visible-locked` 换成已授权内容。
+                  if (hasLockedReplyVisible(dto?.body || current.body || '')) {
+                    void detail.reload();
+                  }
                 } catch (err) {
                   nav.toast(err instanceof ApiError ? err.message : '评论失败');
                 } finally {

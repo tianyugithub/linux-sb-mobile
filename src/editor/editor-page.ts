@@ -94,6 +94,15 @@ body{
 .ProseMirror th,.ProseMirror td{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left;}
 .ProseMirror th{font-weight:800;background:var(--surfaceSoft);}
 .ProseMirror hr{border:0;border-top:1px solid var(--line);margin:10px 0;}
+.ProseMirror .nb-editor-reply-visible{
+  margin:14px 0;padding:12px 14px;
+  border:1px solid var(--line);border-radius:10px;background:var(--canvas);
+}
+.ProseMirror .nb-editor-reply-visible-label{
+  margin:0 0 9px;color:var(--muted);font-size:12px;font-weight:600;
+}
+.ProseMirror .nb-editor-reply-visible-body{margin:0;padding:0;}
+.ProseMirror .nb-editor-reply-visible-body > :last-child{margin-bottom:0;}
 .ProseMirror .selectedCell:after{content:"";position:absolute;inset:0;background:rgba(127,127,127,.18);pointer-events:none;}
 .ProseMirror{padding-right:26px;}
 .lsb-handles{position:absolute;top:0;left:0;right:0;pointer-events:none;}

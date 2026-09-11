@@ -305,9 +305,33 @@ async function main() {
     blocksToHtml([{ type: 'video', provider: 'douyin', embed: '', url: 'https://www.douyin.com/video/1' }]) === '',
   );
 
+  const LOCKED_REPLY_VISIBLE = '<section class="nb-editor-reply-visible nb-editor-reply-visible-locked">'
+    + '<div class="nb-editor-reply-visible-notice"><span aria-hidden="true">🔒</span>'
+    + '<div><strong>回复后可见</strong><span>回复本主题后即可查看这部分内容。</span></div></div></section>';
+
   setContent('<p>测试文本</p>');
   runCommand('link', { href: 'https://linux.sb/t/1', text: '哔哩哔哩视频' });
   expect('命令 link', request('cmd').includes('<a href="https://linux.sb/t/1">哔哩哔哩视频</a>'));
+
+  // 回复可见：官方 section → 内核 → markdown 标签；锁定块整段忽略，不把提示文案写进正文。
+  const replyMd = '[回复可见]\n爱你哟！\n[/回复可见]';
+  const replyHtml = blocksToHtml(parseEditableArticle(replyMd));
+  expect('回复可见产出官方 section', replyHtml.includes('nb-editor-reply-visible-open') && replyHtml.includes('回复可见内容'));
+  setContent(replyHtml);
+  const replyOut = request('rv');
+  expect('回复可见块保留', replyOut.includes('nb-editor-reply-visible-open') && replyOut.includes('爱你哟！'), replyOut.slice(0, 160));
+  expect(
+    '回复可见往返 markdown',
+    blocksToMarkdown(parseEditableArticle(replyOut)).includes('[回复可见]')
+      && blocksToMarkdown(parseEditableArticle(replyOut)).includes('爱你哟！'),
+  );
+  setContent('<p>已有内容</p>');
+  runCommand('reply_visible', { html: '<p>秘密</p>' });
+  const inserted = request('rvi');
+  expect('命令 reply_visible', inserted.includes('nb-editor-reply-visible-open') && inserted.includes('秘密'), inserted.slice(0, 160));
+  setContent(`${LOCKED_REPLY_VISIBLE}<p>公开段落</p>`);
+  const lockedOut = request('rvl');
+  expect('锁定块不进内核', !lockedOut.includes('回复后可见') && lockedOut.includes('公开段落'), lockedOut.slice(0, 160));
 
   console.log(skipped ? `\n${skipped} 项因 jsdom 布局 API 缺失跳过（真机 WebView 不受影响）` : '');
   console.log(failures ? `\n${failures} 项失败` : '\n全部通过');

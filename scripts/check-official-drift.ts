@@ -284,11 +284,33 @@ async function main() {
   const platformWords = ['douyin', 'bilibili', 'youtube'].filter((name) => plugins.includes(name));
   console.log(`  · plugins.js 里出现过的平台关键字：${platformWords.join(', ')}`);
 
+  // ── 5b. 回复可见（发帖工具条 + 主题页 section，回帖框没有这个按钮） ────────
+  console.log('\n[回复可见]');
+  if (plugins.includes('insertReplyVisible') && plugins.includes('[回复可见]') && plugins.includes('[/回复可见]')) {
+    ok('plugins.js 插入语法', 'insertReplyVisible + [回复可见]');
+  } else {
+    bad('plugins.js 插入语法', '找不到 insertReplyVisible / [回复可见]，发帖工具条会对不齐');
+  }
+  if (plugins.includes('unlockReplyVisible')) ok('回帖后解锁', 'unlockReplyVisible');
+  else warn('回帖后解锁', 'plugins.js 没有 unlockReplyVisible，App 仍会在回帖成功后重拉主题页');
+  if (/\.nb-editor-reply-visible-locked/.test(css) && /\.nb-editor-reply-visible-open/.test(css)) {
+    ok('plugins.css 锁定/解锁样式');
+  } else {
+    warn('plugins.css 回复可见样式', '锁定或解锁 class 可能改名了');
+  }
+
   // ── 6. 登录后内容（称号池 / 通知页标记） ──────────────────────────────────
   console.log('\n[登录后内容]');
   if (!jar) {
-    warn('未提供 LSB_COOKIE', '跳过称号池与通知页结构核对（设置 LSB_COOKIE 或放 /tmp/cookie.txt 可开启）');
+    warn('未提供 LSB_COOKIE', '跳过称号池、发帖工具条与通知页结构核对（设置 LSB_COOKIE 或放 /tmp/cookie.txt 可开启）');
   } else {
+    try {
+      const edit = await get('/topic_edit');
+      if (/data-nb-editor-action="reply_visible"/.test(edit)) ok('发帖工具条有回复可见');
+      else bad('发帖工具条缺少回复可见', 'topic_edit 没有 data-nb-editor-action="reply_visible"');
+    } catch (error) {
+      warn('发帖页读取失败', error instanceof Error ? error.message : String(error));
+    }
     try {
       const gacha = await get('/gacha');
       const liveTitles = [...new Set([...gacha.matchAll(/gacha-title-name">([^<]+)/g)].map((m) => m[1].trim()))];
