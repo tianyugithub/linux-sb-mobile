@@ -304,8 +304,25 @@ export function createAppStyles(C: Palette) {
   },
   commentCaptchaTitle: { color: C.text, fontSize: 12, fontWeight: '700' },
   /** 红包帖的回帖要求（「不少于 N 个字」），挂在回帖框上方 */
-  commentAward: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4 },
-  commentAwardText: { color: C.muted, fontSize: 12, lineHeight: 17, flexShrink: 1 },
+  commentPacketHint: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  commentPacketHintText: { color: C.muted, fontSize: 12, lineHeight: 17, flexShrink: 1 },
+  /**
+   * 楼层上的红包奖励标记（官网是红色药丸 + 礼物图标：「🎁 +1」）。
+   * 位置按用户要求排在楼号 `#N` 左边，所以做得比楼号矮一点、不抢视线。
+   */
+  commentPacketTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginRight: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.red,
+    backgroundColor: C.dangerFill,
+  },
+  commentPacketTagText: { color: C.red, fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'] },
   // 私信输入栏复用评论区回帖框的骨架，只多一个超长提示
   dmCounter: { color: C.dim, fontSize: 11 },
   emojiCell: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },

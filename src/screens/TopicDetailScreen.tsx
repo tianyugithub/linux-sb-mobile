@@ -1669,19 +1669,6 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
               <Icon name="ellipsis-horizontal" size={16} color={C.dim} />
             </Pressable>
           </View>
-          {/* 红包帖里领到红包的楼层：官方挂「+N」奖励标记，点它看说明 */}
-          {item.redPacket && (item.redPacket.points > 0 || item.redPacket.tip) ? (
-            <View style={styles.commentEssenceTag}>
-              <Pressable
-                onPress={() => nav.toast(item.redPacket?.tip || `红包奖励 +${item.redPacket?.points ?? 0} 积分`)}
-                hitSlop={6}
-              >
-                <CompactTag tone="danger">
-                  {item.redPacket.points > 0 ? `红包 +${item.redPacket.points}` : '红包奖励'}
-                </CompactTag>
-              </Pressable>
-            </View>
-          ) : null}
           {/* 竞猜理由是以「评议回帖」发布的，官方会打上「精华竞猜 · 预测会不会加精」标签 */}
           {item.essenceLabel ? (
             <View style={styles.commentEssenceTag}>
@@ -1738,6 +1725,20 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
               ) : null}
             </Pressable>
             <View style={styles.commentActionMeta}>
+              {/* 红包帖里领到红包的楼层：官网是楼号左边一颗「🎁 +N」，点它看说明 */}
+              {item.redPacket && (item.redPacket.points > 0 || item.redPacket.tip) ? (
+                <Pressable
+                  onPress={() => nav.toast(item.redPacket?.tip || `红包奖励 +${item.redPacket?.points ?? 0} 积分`)}
+                  hitSlop={8}
+                  style={styles.commentPacketTag}
+                  accessibilityLabel={item.redPacket.tip || `红包奖励 +${item.redPacket.points} 积分`}
+                >
+                  <Icon name="gift" size={12} color={C.red} />
+                  <Text style={styles.commentPacketTagText}>
+                    {item.redPacket.points > 0 ? `+${item.redPacket.points}` : '红包'}
+                  </Text>
+                </Pressable>
+              ) : null}
               {item.floor ? (
                 <Pressable onPress={() => jumpToComment({ id: item.id, floor: item.floor })} hitSlop={8} accessibilityLabel={`定位到第 ${item.floor} 楼`}>
                   <Text style={styles.commentActionFloor}>#{item.floor}</Text>
@@ -2119,9 +2120,9 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
         ) : null}
         {/* 红包帖：官方把领取门槛写在卡片上，回复框这里也得说清楚，否则用户不知道为什么要凑字数 */}
         {nav.loggedIn && redPacketNeed ? (
-          <View style={styles.commentAward}>
+          <View style={styles.commentPacketHint}>
             <CompactTag tone="danger">红包帖</CompactTag>
-            <Text style={styles.commentAwardText}>
+            <Text style={styles.commentPacketHintText}>
               {`${redPacketNeed.value || redPacketNeed.note}${redPacketNeed.note && redPacketNeed.value ? `（${redPacketNeed.note}）` : ''}，合格回复领取积分红包`}
             </Text>
           </View>
