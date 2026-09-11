@@ -1,4 +1,4 @@
-import { LINUX_ORIGIN } from '../services/live';
+import { LINUX_ORIGIN, isLinuxSiteUrl } from './linux-access';
 import { decodeEntities } from './entities';
 
 export function resolveAppHref(href: string): string | null {
@@ -39,12 +39,7 @@ export function isHttpUrl(url: string): boolean {
 }
 
 export function isLinuxUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./i, '');
-    return host === 'linux.sb' || host.endsWith('.linux.sb');
-  } catch {
-    return false;
-  }
+  return isLinuxSiteUrl(url);
 }
 
 export function hostLabel(url: string): string {

@@ -24,7 +24,25 @@ function ok(data: unknown, status = 200): MockResponse {
   return { status, data };
 }
 
+function parseExposedSetCookies(raw: string): string[] {
+  const text = raw.trim();
+  if (text.startsWith('[')) {
+    try {
+      const list = JSON.parse(text) as unknown;
+      if (Array.isArray(list)) return list.map((item) => String(item)).filter(Boolean);
+    } catch {
+      /* 不是 JSON 就按老格式拆 */
+    }
+  }
+  return text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
 function setCookiesOf(response: Response): string[] {
+  const exposed = response.headers.get('x-lsb-set-cookie');
+  if (exposed) {
+    const listed = parseExposedSetCookies(exposed);
+    if (listed.length) return listed;
+  }
   const headers = response.headers as Headers & { getSetCookie?: () => string[] };
   if (typeof headers.getSetCookie === 'function') {
     const listed = headers.getSetCookie();
@@ -140,8 +158,12 @@ async function linuxFetch(url: string, init: RequestInit, timeoutMs = 15_000): P
   }
 }
 
-async function linuxGet(path: string, cookies: string, referer = '/'): Promise<{ cookies: string; html: string; url: string }> {
-  const credentials = siteCredentials();
+async function linuxGet(
+  path: string,
+  cookies: string,
+  referer = '/',
+  credentials: RequestCredentials = siteCredentials(),
+): Promise<{ cookies: string; html: string; url: string }> {
   const response = await linuxFetch(liveUrl(path), {
     headers: {
       ...browserHeaders(cookies, referer),
@@ -163,7 +185,7 @@ async function postLogout(cookies: string, html: string): Promise<string> {
   let jar = cookies;
   let csrf = readCsrf(html);
   if (!csrf) {
-    const editor = await linuxGet('/topic_edit', jar);
+    const editor = await linuxGet('/topic_edit', jar, '/', 'omit');
     jar = editor.cookies;
     csrf = readCsrf(editor.html);
     if (isLoginForm(editor.html) || isRegisterForm(editor.html)) return jar;
@@ -178,7 +200,7 @@ async function postLogout(cookies: string, html: string): Promise<string> {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: encodeLoginForm({ _csrf: csrf }),
-      credentials: siteCredentials(),
+      credentials: 'omit',
       redirect: 'follow',
     });
     return applySetCookie(jar, setCookiesOf(posted));
@@ -601,12 +623,15 @@ async function dispatch(req: MockRequest): Promise<unknown> {
   if (method === 'POST' && path === '/auth/logout') {
     const cookies = cookiesForToken(token) ?? '';
     destroyUpstreamSession(token);
-    try {
-      const page = await linuxGet('/', cookies);
-      await postLogout(page.cookies || cookies, page.html);
-    } catch {
-      /* still signed out locally */
-    }
+    // 官网退出放后台：本地必须先变成游客，不能卡在 GET / + POST /logout 上。
+    void (async () => {
+      try {
+        const page = await linuxGet('/', cookies, '/', 'omit');
+        await postLogout(page.cookies || cookies, page.html);
+      } catch {
+        /* still signed out locally */
+      }
+    })();
     return { ok: true };
   }
 

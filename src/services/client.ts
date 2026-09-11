@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import type { ApiErrorBody } from '../types/api';
 import { requestId } from '../utils/time';
+import { viaAccess } from '../utils/linux-access';
 import { getAccessToken, getRefreshToken, setSession, clearSession } from './session';
 import { handleAuthRequest } from './upstream-auth';
 import { handleLiveRequest } from './live';
@@ -42,7 +43,7 @@ export function mediaUrl(url?: string | null): string | undefined {
       : undefined;
   if (!resolved) return undefined;
   const base = remoteApiBase();
-  if (base === null) return resolved;
+  if (base === null) return viaAccess(resolved);
   return `${base}/media?u=${encodeURIComponent(resolved)}`;
 }
 
@@ -131,7 +132,7 @@ async function tryRefresh(): Promise<boolean> {
       : await dispatchRemote('POST', '/auth/refresh', { body: { refreshToken }, auth: false });
     const data = result.data as { token?: string; refreshToken?: string } | undefined;
     if (result.error || !data?.token || !data.refreshToken) {
-      clearSession();
+      void clearSession();
       return false;
     }
     setSession(data.token, data.refreshToken);

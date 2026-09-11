@@ -22,6 +22,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { mediaUrl } from '../services/client';
 import { imageKey } from '../utils/article';
+import { useRemoteMedia } from '../hooks/useRemoteMedia';
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
@@ -54,8 +55,7 @@ function GalleryImage({
   onDismiss: () => void;
   onTap: () => void;
 }) {
-  const proxied = displayUri(src);
-  const [uri, setUri] = useState(proxied);
+  const uri = useRemoteMedia(displayUri(src));
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const scale = useRef(new Animated.Value(1)).current;
@@ -112,10 +112,9 @@ function GalleryImage({
   }, [applyScale]);
 
   useEffect(() => {
-    setUri(proxied);
     setFailed(false);
     setLoaded(false);
-  }, [proxied, src]);
+  }, [uri, src]);
 
   useEffect(() => {
     if (!active) reset();
@@ -226,7 +225,6 @@ function GalleryImage({
           onPress={() => {
             setFailed(false);
             setLoaded(false);
-            setUri(displayUri(src));
           }}
           style={styles.retryBtn}
         >
@@ -239,24 +237,35 @@ function GalleryImage({
   return (
     <View style={{ width, height }} {...responder.panHandlers}>
       <Pressable onPress={handleTap} style={[styles.page, { width, height }]}>
-        {!loaded ? <ActivityIndicator color="#fff" style={styles.spinner} /> : null}
+        {!loaded || !uri ? <ActivityIndicator color="#fff" style={styles.spinner} /> : null}
         <Animated.View style={{ opacity, transform: [{ translateX: tx }, { translateY: ty }, { scale }] }}>
-          <Image
-            source={{ uri }}
-            style={{ width, height }}
-            resizeMode="contain"
-            onLoad={() => setLoaded(true)}
-            onError={() => {
-              if (uri !== src) {
-                setUri(src);
-                return;
-              }
-              setFailed(true);
-            }}
-          />
+          {uri ? (
+            <Image
+              source={{ uri }}
+              style={{ width, height }}
+              resizeMode="contain"
+              onLoad={() => setLoaded(true)}
+              onError={() => {
+                setFailed(true);
+              }}
+            />
+          ) : null}
         </Animated.View>
       </Pressable>
     </View>
+  );
+}
+
+function GalleryThumb({ src, on, onPress }: { src: string; on: boolean; onPress: () => void }) {
+  const uri = useRemoteMedia(displayUri(src));
+  return (
+    <Pressable onPress={onPress}>
+      {uri ? (
+        <Image source={{ uri }} style={[styles.thumb, on && styles.thumbOn]} />
+      ) : (
+        <View style={[styles.thumb, on && styles.thumbOn]} />
+      )}
+    </Pressable>
   );
 }
 
@@ -395,12 +404,12 @@ export function ImageGallery({
                 contentContainerStyle={styles.thumbsInner}
               >
                 {uris.map((item, itemIndex) => (
-                  <Pressable key={`${imageKey(item)}-thumb-${itemIndex}`} onPress={() => jumpTo(itemIndex)}>
-                    <Image
-                      source={{ uri: displayUri(item) }}
-                      style={[styles.thumb, itemIndex === current && styles.thumbOn]}
-                    />
-                  </Pressable>
+                  <GalleryThumb
+                    key={`${imageKey(item)}-thumb-${itemIndex}`}
+                    src={item}
+                    on={itemIndex === current}
+                    onPress={() => jumpTo(itemIndex)}
+                  />
                 ))}
               </ScrollView>
             ) : null}

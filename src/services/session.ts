@@ -34,8 +34,31 @@ async function nativeGet(key: string): Promise<string | null> {
   return secureGet(key);
 }
 
-function nativeSet(key: string, value: string | null) {
-  void (value ? secureSet(key, value) : secureDelete(key)).catch(() => undefined);
+/** 每次退出加一，挡住「退出之后才完成的 secureSet」把会话写回来。 */
+let storeEpoch = 0;
+let signedOut = false;
+const inFlight = new Set<Promise<void>>();
+
+function nativeSet(key: string, value: string | null): Promise<void> {
+  const epoch = storeEpoch;
+  const job = (async () => {
+    try {
+      if (value) await secureSet(key, value);
+      else await secureDelete(key);
+    } catch {
+      /* ignore */
+    }
+    if (epoch !== storeEpoch) {
+      try {
+        await secureDelete(key);
+      } catch {
+        /* ignore */
+      }
+    }
+  })();
+  inFlight.add(job);
+  void job.finally(() => inFlight.delete(job));
+  return job;
 }
 
 function writeLocal(key: string, value: string | null) {
@@ -46,13 +69,24 @@ function writeLocal(key: string, value: string | null) {
     else store.removeItem(key);
     return;
   }
-  nativeSet(key, value);
+  void nativeSet(key, value);
 }
 
 const hasSessionCookie = (jar: string | null | undefined) => /(^|;\s*)bbs_auth=/.test(jar ?? '');
 
 /** 最近一次写入的 cookie jar，用来判断「这次要写的会不会把登录态写没了」。 */
 let lastCookies: string | null = null;
+
+/** 退出之后飞着的请求不得再把 bbs_auth 写回 jar / CookieManager。 */
+export function sessionAcceptsCookies(): boolean {
+  return !signedOut;
+}
+
+/** 界面已变游客时立刻挡住回写，不必等 clearSession 写盘结束。 */
+export function markSignedOut() {
+  signedOut = true;
+  lastCookies = '';
+}
 
 /**
  * 写入 cookie jar，并挡住「用游客 jar 覆盖登录态」。
@@ -63,12 +97,21 @@ let lastCookies: string | null = null;
  * 就把旧的会话 cookie 接回去。真正的退出走 clearSession（写 null），不受此限。
  */
 function writeCookies(next: string) {
+  if (signedOut && hasSessionCookie(next)) {
+    console.warn('[session] 已退出，丢弃 bbs_auth');
+    return;
+  }
   const apply = (value: string) => {
     lastCookies = value;
     writeLocal(COOKIE_KEY, value);
     void writeLinuxCookies(value);
   };
   if (hasSessionCookie(next)) {
+    apply(next);
+    return;
+  }
+  // clearSession 把 lastCookies 置成 ''：允许空 jar，不再把 bbs_auth 接回去。
+  if (lastCookies === '') {
     apply(next);
     return;
   }
@@ -103,6 +146,7 @@ function mergeSessionCookie(next: string, previous: string): string {
 }
 
 function persistSite(snapshot: SiteSessionSnapshot) {
+  if (signedOut) return;
   const token = memory.token;
   const record = (token && snapshot.sessions[token]) || Object.values(snapshot.sessions).at(-1);
   if (!record) {
@@ -154,7 +198,7 @@ export async function hydrateSession(): Promise<void> {
     }
   }
   setSiteSessionPersist(persistSite);
-  if (cookies) void writeLinuxCookies(cookies);
+  if (cookies && memory.token) void writeLinuxCookies(cookies);
   memory.hydrated = true;
 }
 
@@ -171,6 +215,7 @@ export function getRefreshToken(): string | null {
 }
 
 export function setSession(token: string, refreshToken: string): void {
+  signedOut = false;
   memory.token = token;
   memory.refreshToken = refreshToken;
   memory.hydrated = true;
@@ -179,12 +224,23 @@ export function setSession(token: string, refreshToken: string): void {
   persistSite(getSiteSessionSnapshot());
 }
 
-export function clearSession(): void {
+export async function clearSession(): Promise<void> {
+  storeEpoch += 1;
+  signedOut = true;
   memory.token = null;
   memory.refreshToken = null;
   memory.hydrated = true;
-  writeLocal(TOKEN_KEY, null);
-  writeLocal(REFRESH_KEY, null);
-  writeLocal(COOKIE_KEY, null);
-  writeLocal(USER_KEY, null);
+  lastCookies = '';
+  if (Platform.OS === 'web') {
+    writeLocal(TOKEN_KEY, null);
+    writeLocal(REFRESH_KEY, null);
+    writeLocal(COOKIE_KEY, null);
+    writeLocal(USER_KEY, null);
+    return;
+  }
+  nativeSet(TOKEN_KEY, null);
+  nativeSet(REFRESH_KEY, null);
+  nativeSet(COOKIE_KEY, null);
+  nativeSet(USER_KEY, null);
+  await Promise.all([...inFlight]);
 }

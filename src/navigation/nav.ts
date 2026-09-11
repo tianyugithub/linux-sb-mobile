@@ -60,7 +60,7 @@ export type Nav = {
   loggedIn: boolean;
   /** 本地会话是否已经恢复：false 时登录态还未知，界面不要显示「登录后查看」这类结论。 */
   sessionReady: boolean;
-  signIn: (input: { username: string; password?: string; provider?: 'github' | 'google'; captchaToken?: string; oauthCookies?: string }) => Promise<void>;
+  signIn: (input: { username?: string; password?: string; provider?: 'github' | 'google'; captchaToken?: string; oauthCookies?: string }) => Promise<void>;
   signUp: (input: { username: string; password: string; email: string; emailCode: string; captchaToken: string }) => Promise<void>;
   signOut: () => Promise<void>;
   checkedIn: boolean;

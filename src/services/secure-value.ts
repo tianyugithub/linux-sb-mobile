@@ -201,10 +201,17 @@ export async function secureDelete(key: string): Promise<void> {
     return;
   }
   const pointer = await readPointer(key);
-  for (let offset = 0; offset < GENERATIONS; offset += 1) {
-    await dropGeneration(key, pointer - offset);
+  const last = Math.max(pointer, GENERATIONS);
+  for (let generation = 0; generation <= last; generation += 1) {
+    await dropGeneration(key, generation);
   }
   try {
+    const rawCount = await SecureStore.getItemAsync(`${key}.n`);
+    const count = rawCount ? Number.parseInt(rawCount, 10) : 0;
+    for (let index = 0; index < (Number.isFinite(count) ? count : 0); index += 1) {
+      await SecureStore.deleteItemAsync(`${key}.${index}`);
+    }
+    await SecureStore.deleteItemAsync(`${key}.n`);
     await SecureStore.deleteItemAsync(pointerKey(key));
     await SecureStore.deleteItemAsync(key);
   } catch {

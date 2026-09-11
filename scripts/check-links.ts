@@ -3,6 +3,7 @@
  */
 import { parseArticle } from '../src/utils/article';
 import { classifyAppHref, unwrapLinuxJump } from '../src/utils/links';
+import { hasLinuxSessionCookie, mergeCookieHeaders } from '../src/utils/site-cookies';
 
 let fails = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -63,7 +64,14 @@ check(
 const topic = classifyAppHref('https://linux.sb/topic/15751');
 check('站内帖子不受影响', topic.type === 'topic' && topic.id === '15751');
 
+const mirrorTopic = classifyAppHref('https://lsb.miapi.cc/topic/15751');
+check('镜像域名的帖子仍进主题页', mirrorTopic.type === 'topic' && mirrorTopic.id === '15751');
+
 check('javascript 仍忽略', classifyAppHref('javascript:alert(1)').type === 'ignore');
+
+const merged = mergeCookieHeaders('bbs_csrf=from-site', 'bbs_auth=secret; bbs_csrf=from-mirror');
+check('官网和镜像 cookie 合成一份', merged.includes('bbs_auth=secret') && merged.includes('bbs_csrf=from-mirror'));
+check('能认出登录 cookie', hasLinuxSessionCookie(merged) && !hasLinuxSessionCookie('bbs_csrf=only'));
 
 console.log(fails ? `\n✗ 未通过：${fails} 项` : '\n✓ 通过：外链 /jump 分流正常');
 process.exit(fails ? 1 : 0);

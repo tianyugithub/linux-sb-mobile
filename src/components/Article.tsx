@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { C } from '../theme/palette';
 import { styles } from '../theme/app-styles';
 import { mediaUrl } from '../services/client';
+import { useRemoteMedia } from '../hooks/useRemoteMedia';
 import { scaleTextStyle } from '../services/prefs';
 import { usePrefs } from '../hooks/usePrefs';
 import { VIDEO_LABEL, collectImageRun, hostOf, imageKey, parseArticle, spansToPlain, uniqueImages, type ArticleBlock, type InlineSpan, type TextAlign } from '../utils/article';
@@ -41,10 +42,9 @@ export function ArticleImage({
   align?: TextAlign;
 }) {
   const proxied = mediaUrl(src) ?? src;
-  const [uri, setUri] = useState(proxied);
+  const uri = useRemoteMedia(proxied);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
-    setUri(proxied);
     setFailed(false);
   }, [proxied, src]);
   if (failed) {
@@ -57,20 +57,17 @@ export function ArticleImage({
       </View>
     );
   }
-  const onError = () => {
-    if (uri !== src) setUri(src);
-    else setFailed(true);
-  };
   const open = () => onOpen?.(src);
   const badge = typeof index === 'number' && index >= 0 && (count ?? 0) > 1;
+  const frame = grid ? styles.articleImageGridImage : styles.articleImage;
   if (Platform.OS === 'web') {
     return (
       <View style={grid ? styles.articleImageGridItem : undefined}>
         <Pressable onPress={open} style={grid ? styles.articleImageGridHit : styles.articleImageHit}>
-          {webImg(uri, grid
+          {webImg(uri ?? proxied, grid
             ? { width: '100%', height: '100%', borderRadius: 8, objectFit: 'cover', backgroundColor: C.surface, cursor: 'zoom-in' }
             : { width: '100%', maxHeight: 280, borderRadius: 8, objectFit: 'contain', backgroundColor: C.surface, cursor: 'zoom-in' },
-          onError)}
+          () => setFailed(true))}
           {badge ? <View style={styles.articleImageBadge}><Text style={styles.articleImageBadgeText}>{index + 1}/{count}</Text></View> : null}
         </Pressable>
         {caption ? <Text selectable style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}
@@ -80,7 +77,11 @@ export function ArticleImage({
   return (
     <View style={grid ? styles.articleImageGridItem : undefined}>
       <Pressable onPress={open} style={grid ? styles.articleImageGridHit : styles.articleImageHit}>
-        <Image source={{ uri }} style={grid ? styles.articleImageGridImage : styles.articleImage} resizeMode={grid ? 'cover' : 'contain'} onError={onError} />
+        {uri ? (
+          <Image source={{ uri }} style={frame} resizeMode={grid ? 'cover' : 'contain'} onError={() => setFailed(true)} />
+        ) : (
+          <View style={frame} />
+        )}
         {badge ? <View style={styles.articleImageBadge}><Text style={styles.articleImageBadgeText}>{index + 1}/{count}</Text></View> : null}
       </Pressable>
       {caption ? <Text selectable style={[styles.articleImageCaption, blockAlignStyle(align)]}>{caption}</Text> : null}

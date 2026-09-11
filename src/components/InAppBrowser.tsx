@@ -6,6 +6,7 @@ import { cookiesForToken } from '../services/site-session';
 import { getAccessToken } from '../services/session';
 import { writeLinuxCookies } from '../utils/site-cookies';
 import { classifyAppHref, hostLabel, isHttpUrl } from '../utils/links';
+import { adoptAccessUrl, officialLinuxUrl, viaAccess } from '../utils/linux-access';
 import { C, registerStyleSync, type Palette } from '../theme/palette';
 
 const CHROME_UA = Platform.select({
@@ -37,7 +38,8 @@ export function InAppBrowser({
   const viewRef = useRef<WebView>(null);
   const [ready, setReady] = useState(false);
   const [cookieHeader, setCookieHeader] = useState('');
-  const [currentUrl, setCurrentUrl] = useState(url);
+  const [uri, setUri] = useState(() => viaAccess(url));
+  const [currentUrl, setCurrentUrl] = useState(() => viaAccess(url));
   const [pageTitle, setPageTitle] = useState(title || hostLabel(url));
   const [canGoBack, setCanGoBack] = useState(false);
   const [loading, setLoading] = useState(isHttpUrl(url));
@@ -64,6 +66,12 @@ export function InAppBrowser({
     };
   }, []);
 
+  useEffect(() => {
+    const next = viaAccess(url);
+    setUri(next);
+    setCurrentUrl(next);
+  }, [url]);
+
   const goBack = () => {
     if (confirmOpen) {
       setConfirmOpen(false);
@@ -89,7 +97,7 @@ export function InAppBrowser({
 
   const openExternal = async () => {
     setConfirmOpen(false);
-    const target = currentUrl || url;
+    const target = officialLinuxUrl(currentUrl || url);
     try {
       await Linking.openURL(target);
     } catch {
@@ -115,7 +123,7 @@ export function InAppBrowser({
             <WebView
               ref={viewRef}
               source={{
-                uri: url,
+                uri,
                 headers: cookieHeader ? { Cookie: cookieHeader } : undefined,
               }}
               userAgent={CHROME_UA}
@@ -132,6 +140,12 @@ export function InAppBrowser({
               onLoadEnd={() => setLoading(false)}
               onShouldStartLoadWithRequest={(req) => {
                 const next = req.url || '';
+                const bounced = adoptAccessUrl(next);
+                if (bounced) {
+                  setUri(bounced);
+                  setCurrentUrl(bounced);
+                  return false;
+                }
                 if (next && /^https?:/i.test(next) && onAppHref) {
                   const action = classifyAppHref(next);
                   if (action.type !== 'browser' && action.type !== 'ignore') {
@@ -150,7 +164,15 @@ export function InAppBrowser({
               }}
               onNavigationStateChange={(navState: WebViewNavigation) => {
                 setCanGoBack(navState.canGoBack);
-                if (navState.url) setCurrentUrl(navState.url);
+                if (navState.url) {
+                  const bounced = adoptAccessUrl(navState.url);
+                  if (bounced) {
+                    setUri(bounced);
+                    setCurrentUrl(bounced);
+                    return;
+                  }
+                  setCurrentUrl(navState.url);
+                }
                 if (navState.title) setPageTitle(navState.title);
               }}
               onOpenWindow={(event) => {

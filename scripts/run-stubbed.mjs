@@ -45,19 +45,28 @@ export class File {
   constructor(...parts) { this.uri = parts.map(uriOf).join('/'); }
   get exists() { return files.has(this.uri); }
   textSync() { return files.get(this.uri) ?? ''; }
-  write(text) { files.set(this.uri, String(text)); }
+  info() { const v = files.get(this.uri); return { exists: v != null, size: v == null ? 0 : (v.byteLength ?? String(v).length) }; }
+  write(text) { files.set(this.uri, text); }
+  create() { if (!files.has(this.uri)) files.set(this.uri, ''); }
   delete() { files.delete(this.uri); }
   static async downloadFileAsync(_url, dest) { return dest; }
 }
+export class Directory {
+  constructor(...parts) { this.uri = parts.map(uriOf).join('/'); }
+  get exists() { return true; }
+  create() {}
+}
 export const Paths = { document: { uri: 'file:///doc' }, cache: { uri: 'file:///cache' } };
-export default { File, Paths };`,
+export default { File, Directory, Paths };`,
   'linux-notify': `export const syncNotifySession = () => undefined;
+export const setAccessChannel = () => undefined;
 export const canInstallPackages = () => false;
 export const openInstallPermission = () => false;
 export const downloadApk = async (url, dest) => dest;
 export const installApk = async () => true;
 export default {};`,
   '@react-native-cookies/cookies': 'export const get = async () => ({});\nexport const set = async () => true;\nexport default {};',
+  'expo-modules-core': 'export const requireOptionalNativeModule = () => null;\nexport default {};',
 };
 
 await build({
@@ -72,7 +81,7 @@ await build({
   plugins: [{
     name: 'stub-native',
     setup(b) {
-      b.onResolve({ filter: /^(react-native|expo-secure-store|expo-file-system|linux-notify|@react-native-cookies\/cookies)$/ }, (args) => ({
+      b.onResolve({ filter: /^(react-native|expo-secure-store|expo-file-system|linux-notify|@react-native-cookies\/cookies|expo-modules-core)$/ }, (args) => ({
         path: args.path,
         namespace: 'stub',
       }));
