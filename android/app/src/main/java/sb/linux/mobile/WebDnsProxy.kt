@@ -18,6 +18,7 @@ import kotlin.concurrent.thread
  * 内置 WebView 走系统 DNS，国内会把 linux.sb 解析成假 IP。
  * 在本机起一个只监听 127.0.0.1 的 CONNECT 代理：解析用 DohDns，
  * TLS 仍由 WebView 和官网直接完成（不做中间人）。
+ * DoH / 直连时把第一条 ClientHello 拆成两个 TLS 记录再送出。
  */
 object WebDnsProxy {
   fun start(dns: Dns) {
@@ -78,7 +79,7 @@ object WebDnsProxy {
         }
         output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
         output.flush()
-        pipe(client, remote)
+        pipe(client, remote, tlsUplink = port == 443)
         return
       }
       val hostLine = Regex("(?im)^Host:\\s*([^\\r\\n]+)").find(head)?.groupValues?.get(1)?.trim().orEmpty()
@@ -94,7 +95,7 @@ object WebDnsProxy {
         return
       }
       remote.getOutputStream().write(head.toByteArray(Charsets.ISO_8859_1))
-      pipe(client, remote)
+      pipe(client, remote, tlsUplink = false)
     } catch (_: Exception) {
       /* connection dropped */
     } finally {
@@ -130,9 +131,13 @@ object WebDnsProxy {
     return null
   }
 
-  private fun pipe(left: Socket, right: Socket) {
+  private fun pipe(left: Socket, right: Socket, tlsUplink: Boolean) {
     val up = thread(name = "lsb-web-proxy-up", isDaemon = true) {
-      copy(left.getInputStream(), right.getOutputStream())
+      if (tlsUplink) {
+        TlsFrag.copyUplink(left.getInputStream(), right.getOutputStream())
+      } else {
+        copy(left.getInputStream(), right.getOutputStream())
+      }
       try {
         right.shutdownOutput()
       } catch (_: Exception) {

@@ -5,42 +5,76 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * DNS over HTTPS。
  *
- * linux.sb 在 Cloudflare 上。国内运营商 DNS、以及阿里云 / DNSPod 的 DoH，
- * 都会把解析污染成 Dropbox / Facebook 的地址，TLS 必然失败。
- * 这里改走 1.1.1.1 / 8.8.8.8（URL 里直接写 IP，不再解析 DoH 域名），
- * 并丢掉明显的污染结果；若仍失败，回退到已知的 Cloudflare Anycast。
+ * 镜像通道：lsb.miapi.cc / cap-lsb.miapi.cc 钉到美国机 154.12.50.175，
+ * HTTP 反代到官网（SNI 是镜像域名）。
+ * DoH 通道：只问 stellafortuna query-dns，拿到 Cloudflare IP 后再直连 linux.sb。
+ * 直连通道：先探测写死的 Cloudflare Anycast，后台再用 1.1.1.1 / 8.8.8.8。
+ * 国内运营商 DNS、以及阿里云 / DNSPod 的 DoH，会把 linux.sb 污染成
+ * Dropbox / Facebook 的地址，TLS 必然失败。
  *
  * GitHub 用阿里云 DoH / 香港节点（20.205.243.x）；网页走内置浏览器即可打开。
  * 安装包和 API 另走 gh-proxy 镜像。
  */
 class DohDns : Dns {
   private val cache = ConcurrentHashMap<String, Cached>()
+  private val failedUntil = ConcurrentHashMap<String, Long>()
+  private val linuxLock = Any()
+  private val probePool = Executors.newCachedThreadPool { runnable ->
+    Thread(runnable, "lsb-probe").apply { isDaemon = true }
+  }
   private val bootstrap = OkHttpClient.Builder()
     .connectTimeout(2, TimeUnit.SECONDS)
     .readTimeout(2, TimeUnit.SECONDS)
-    .dns(Dns.SYSTEM)
+    .dns(object : Dns {
+      override fun lookup(hostname: String): List<InetAddress> {
+        return pinned(hostname) ?: Dns.SYSTEM.lookup(hostname)
+      }
+    })
     .build()
 
   override fun lookup(hostname: String): List<InetAddress> {
     val host = hostname.lowercase()
+    pinned(host)?.let { pinned ->
+      android.util.Log.i("lsb-dns", "pin $host ${pinned.joinToString { addrKey(it) }}")
+      return pinned
+    }
     if (host in BOOTSTRAP_HOSTS) return Dns.SYSTEM.lookup(hostname)
     if (!needsDoh(host)) return Dns.SYSTEM.lookup(hostname)
 
     val now = System.currentTimeMillis()
-    cache[host]?.let { if (it.until > now && it.addresses.isNotEmpty()) return it.addresses }
+    cache[host]?.let { cached ->
+      val live = cached.addresses.filter { (failedUntil[addrKey(it)] ?: 0L) <= now }
+      if (cached.until > now && live.isNotEmpty()) return live
+    }
 
     if (isLinuxHost(host)) {
-      val fallback = fallbackLinux(host)
-      cache[host] = Cached(fallback, now + 30_000)
-      Thread({ refreshLinux(host) }, "lsb-doh").apply { isDaemon = true; start() }
-      return fallback
+      synchronized(linuxLock) {
+        val again = System.currentTimeMillis()
+        cache[host]?.let { cached ->
+          val live = cached.addresses.filter { (failedUntil[addrKey(it)] ?: 0L) <= again }
+          if (cached.until > again && live.isNotEmpty()) return live
+        }
+        val probed = if (LinuxAccess.usingDoh()) resolveStella(host) else probeLinux(host)
+        cache[host] = Cached(probed, again + LINUX_TTL_MS)
+        if (!LinuxAccess.usingDoh()) {
+          Thread({ refreshLinux(host) }, "lsb-doh").apply { isDaemon = true; start() }
+        }
+        return probed
+      }
     }
 
     fallbackGithub(host)?.let { fallback ->
@@ -59,13 +93,44 @@ class DohDns : Dns {
     return Dns.SYSTEM.lookup(hostname)
   }
 
+  fun clearLinux() {
+    cache.keys.filter { isLinuxHost(it) || isMirrorHost(it) }.forEach { cache.remove(it) }
+  }
+
+  fun markFailed(hostname: String, address: InetAddress? = null) {
+    val host = hostname.lowercase()
+    if (!isLinuxHost(host) && !isMirrorHost(host)) return
+    val now = System.currentTimeMillis()
+    if (address != null) failedUntil[addrKey(address)] = now + 90_000
+    val cached = cache[host] ?: return
+    val remain = cached.addresses.filter { (failedUntil[addrKey(it)] ?: 0L) <= now }
+    if (remain.size == cached.addresses.size) return
+    if (remain.isNotEmpty()) {
+      cache[host] = Cached(remain, cached.until)
+    } else {
+      cache.remove(host)
+      LinuxHttp.evict()
+    }
+  }
+
   private fun refreshLinux(host: String) {
-    for (endpoint in LINUX_DOH) {
+    val extras = ArrayList<InetAddress>()
+    for (endpoint in DIRECT_DOH) {
       val resolved = query(endpoint, host) ?: continue
-      val accepted = resolved.addresses.filter { isCloudflare(it) }
-      if (accepted.isEmpty()) continue
-      cache[host] = Cached(accepted, resolved.until)
-      return
+      extras += resolved.addresses.filter { isCloudflare(it) }
+      if (extras.isNotEmpty()) break
+    }
+    if (extras.isEmpty()) return
+    val probed = probeCandidates(host, extras)
+    if (probed.isEmpty()) return
+    synchronized(linuxLock) {
+      val now = System.currentTimeMillis()
+      val current = cache[host]?.addresses.orEmpty()
+      val merged = linkedSetOf<InetAddress>()
+      probed.forEach { merged += it }
+      current.filter { (failedUntil[addrKey(it)] ?: 0L) <= now }.forEach { merged += it }
+      if (merged.isEmpty()) return
+      cache[host] = Cached(merged.toList(), now + LINUX_TTL_MS)
     }
   }
 
@@ -76,6 +141,84 @@ class DohDns : Dns {
       if (accepted.isEmpty()) continue
       cache[host] = Cached(accepted, resolved.until)
       return
+    }
+  }
+
+  private fun resolveStella(host: String): List<InetAddress> {
+    val resolved = query(STELLA_DOH, host)
+    val accepted = resolved?.addresses.orEmpty().filter { !isPoison(it) && isCloudflare(it) }
+    if (accepted.isEmpty()) {
+      android.util.Log.w("lsb-dns", "stella empty $host")
+      return probeLinux(host)
+    }
+    val probed = probeCandidates(host, accepted)
+    val used = if (probed.isNotEmpty()) probed else accepted
+    android.util.Log.i("lsb-dns", "stella $host ${used.joinToString { addrKey(it) }}")
+    return used
+  }
+
+  private fun probeLinux(host: String): List<InetAddress> {
+    val official = probeCandidates(host, fallbackLinux(host))
+    if (official.isNotEmpty()) return official
+    val extra = probeCandidates(host, extraCloudflare(host))
+    if (extra.isNotEmpty()) return extra
+    return fallbackLinux(host)
+  }
+
+  private fun probeCandidates(host: String, candidates: List<InetAddress>): List<InetAddress> {
+    if (candidates.isEmpty()) return emptyList()
+    val ok = CopyOnWriteArrayList<InetAddress>()
+    val latch = CountDownLatch(1)
+    candidates.forEach { ip ->
+      probePool.execute {
+        if (tlsReachable(host, ip, 1_800)) {
+          ok += ip
+          latch.countDown()
+        }
+      }
+    }
+    try {
+      latch.await(1_800, TimeUnit.MILLISECONDS)
+    } catch (_: InterruptedException) {
+      Thread.currentThread().interrupt()
+    }
+    if (ok.isNotEmpty()) {
+      try {
+        Thread.sleep(120)
+      } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+      }
+    }
+    val now = System.currentTimeMillis()
+    return ok.filter { (failedUntil[addrKey(it)] ?: 0L) <= now }.distinctBy { addrKey(it) }
+  }
+
+  private fun tlsReachable(host: String, ip: InetAddress, timeoutMs: Int): Boolean {
+    var raw: Socket? = null
+    var ssl: SSLSocket? = null
+    return try {
+      raw = FragSocket(TlsFrag.style)
+      raw.connect(InetSocketAddress(ip, 443), timeoutMs)
+      raw.soTimeout = timeoutMs
+      raw.tcpNoDelay = true
+      val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+      val tls = factory.createSocket(raw, host, 443, true) as SSLSocket
+      ssl = tls
+      tls.soTimeout = timeoutMs
+      TlsEch.apply(tls, host)
+      tls.startHandshake()
+      true
+    } catch (_: Exception) {
+      false
+    } finally {
+      try {
+        ssl?.close()
+      } catch (_: Exception) {
+      }
+      try {
+        raw?.close()
+      } catch (_: Exception) {
+      }
     }
   }
 
@@ -101,12 +244,19 @@ class DohDns : Dns {
   companion object {
     val instance: DohDns by lazy { DohDns() }
 
+    private const val LINUX_TTL_MS = 5 * 60_000L
+
     private val BOOTSTRAP_HOSTS = setOf(
       "dns.alidns.com",
     )
 
-    /** URL 里直接写 IP，避免再去解析 DoH 服务器自己的域名。 */
-    private val LINUX_DOH = listOf(
+    /**
+     * DoH 通道只问 stellafortuna。域名本身常能在国内解析，IP 钉在 Cloudflare。
+     */
+    private const val STELLA_DOH =
+      "https://stellafortuna.ddd.oaifree.com/query-dns?name={name}&type=A"
+    /** 直连通道：1.1.1.1 / 8.8.8.8，URL 里的 IP 条目不再解析 DoH 域名。 */
+    private val DIRECT_DOH = listOf(
       "https://1.1.1.1/dns-query?name={name}&type=A",
       "https://1.0.0.1/dns-query?name={name}&type=A",
       "https://8.8.8.8/resolve?name={name}&type=A",
@@ -118,6 +268,7 @@ class DohDns : Dns {
 
     private fun needsDoh(host: String): Boolean {
       return isLinuxHost(host)
+        || isMirrorHost(host)
         || host == "github.com"
         || host.endsWith(".github.com")
         || host == "github.githubassets.com"
@@ -128,6 +279,37 @@ class DohDns : Dns {
 
     private fun isLinuxHost(host: String): Boolean {
       return host == "linux.sb" || host.endsWith(".linux.sb")
+    }
+
+    private fun isMirrorHost(host: String): Boolean {
+      return host == LinuxAccess.MIRROR_HOST || host == LinuxAccess.CAP_MIRROR_HOST
+    }
+
+    private fun pinned(hostname: String): List<InetAddress>? {
+      val host = hostname.lowercase()
+      // 只钉镜像主机。linux.sb 直连必须走 Cloudflare，不能再指到美国机。
+      if (isMirrorHost(host)) {
+        return listOf(
+          ipv4(
+            host,
+            LinuxAccess.MIRROR_A,
+            LinuxAccess.MIRROR_B,
+            LinuxAccess.MIRROR_C,
+            LinuxAccess.MIRROR_D,
+          ),
+        )
+      }
+      if (host == "stellafortuna.ddd.oaifree.com") {
+        return listOf(
+          ipv4(host, 104, 21, 16, 56),
+          ipv4(host, 172, 67, 210, 33),
+        )
+      }
+      return null
+    }
+
+    private fun addrKey(addr: InetAddress): String {
+      return addr.address?.joinToString(".") { (it.toInt() and 0xFF).toString() } ?: addr.hostAddress.orEmpty()
     }
 
     private fun parseIpv4(hostname: String, data: String): InetAddress? {
@@ -154,6 +336,19 @@ class DohDns : Dns {
       return listOf(
         ipv4(host, 104, 21, 8, 48),
         ipv4(host, 172, 67, 156, 216),
+      )
+    }
+
+    /**
+     * Cloudflare Anycast：任意边缘 IP + SNI linux.sb 都能出站。
+     * 官网两条 A 都挂的时候，换一条常见 104.16–19 再试。
+     */
+    private fun extraCloudflare(host: String): List<InetAddress> {
+      return listOf(
+        ipv4(host, 104, 16, 1, 1),
+        ipv4(host, 104, 17, 1, 1),
+        ipv4(host, 104, 18, 1, 1),
+        ipv4(host, 104, 19, 1, 1),
       )
     }
 
@@ -196,6 +391,7 @@ class DohDns : Dns {
       if (a == 157 && b == 240) return true
       if (a == 198 && (b == 18 || b == 19)) return true
       if (a == 46 && b == 82) return true
+      if (a == 104 && b == 244) return true
       return false
     }
 

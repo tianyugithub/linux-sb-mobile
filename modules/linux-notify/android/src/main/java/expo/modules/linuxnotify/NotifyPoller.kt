@@ -12,7 +12,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
-import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.facebook.react.modules.network.OkHttpClientProvider
@@ -53,6 +52,7 @@ object NotifyPoller {
   fun setSession(context: Context, cookie: String, unread: Int? = null, baselined: Boolean? = null) {
     val editor = prefs(context).edit()
     if (cookie.isNotBlank()) editor.putString(KEY_COOKIE, cookie)
+    else editor.remove(KEY_COOKIE)
     if (unread != null && unread >= 0) editor.putInt(KEY_LAST_UNREAD, unread)
     if (baselined != null) editor.putBoolean(KEY_BASELINED, baselined)
     editor.apply()
@@ -126,13 +126,7 @@ object NotifyPoller {
   }
 
   private fun cookieHeader(context: Context): String {
-    val stored = prefs(context).getString(KEY_COOKIE, "").orEmpty().trim()
-    if (stored.isNotBlank()) return stored
-    return try {
-      CookieManager.getInstance().getCookie(ORIGIN).orEmpty().trim()
-    } catch (_: Exception) {
-      ""
-    }
+    return prefs(context).getString(KEY_COOKIE, "").orEmpty().trim()
   }
 
   private fun fetchUnread(cookie: String): Int? {
