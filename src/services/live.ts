@@ -1921,8 +1921,15 @@ function topicPermissions(html: string): TopicPermissions {
   };
 }
 
-function commentsHidden(html: string): boolean {
+export function commentsHidden(html: string): boolean {
   return /data-replies-login-visible="1"/.test(html) || /class="replies-login-visible"/.test(html);
+}
+
+/** 这一页没有楼层，是因为官网要求登录才给评论，不是真的零回复。 */
+export function commentsRequireLogin(html: string, itemCount: number): boolean {
+  if (itemCount > 0) return false;
+  if (commentsHidden(html)) return true;
+  return isLoginWall(html) && !/post-entry/.test(html);
 }
 
 function parseEditNote(html: string): { editorName: string; editorId: string; editedAt: string } | null {
@@ -4002,11 +4009,12 @@ async function dispatch(req: MockRequest): Promise<unknown> {
     );
     requireTopicPage(html);
     if (isLoginWall(html) && !/post-entry/.test(html)) {
-      return { items: [], nextCursor: null };
+      return { items: [], nextCursor: null, loginRequired: true };
     }
     const items = parseComments(html, topicComments[0]);
-    if (commentsHidden(html) && items.length === 0) {
-      return { items: [], nextCursor: null };
+    const loginRequired = commentsRequireLogin(html, items.length);
+    if (loginRequired) {
+      return { items: [], nextCursor: null, loginRequired: true };
     }
     const currentPage = locateReply || locateFloor ? currentTopicPage(html) : page;
     return {

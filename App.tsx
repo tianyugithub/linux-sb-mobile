@@ -85,8 +85,9 @@ export default function App() {
 }
 
 function ThemedRoot() {
-  const { scheme } = usePrefs();
+  const { scheme, prefsReady } = usePrefs();
   applyScheme(scheme);
+  if (!prefsReady) return null;
   return <AppRoot key={scheme} />;
 }
 

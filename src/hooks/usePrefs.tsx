@@ -13,11 +13,14 @@ import {
   type FontSizePref,
   type AccessChannelPref,
 } from '../services/prefs';
+import { hasBootScheme } from '../services/scheme-boot';
 import { applyScheme, type ColorScheme } from '../theme/palette';
 
 type PrefsApi = AppPrefs & {
   fontFactor: number;
   codeFontsReady: boolean;
+  /** 色系快照或完整偏好已经就绪，可以画第一帧（避免浅色用户先闪深色）。 */
+  prefsReady: boolean;
   setFontSize: (fontSize: FontSizePref) => Promise<void>;
   setPostingNoticeSkip: (postingNoticeSkip: boolean) => Promise<void>;
   /** 首页「每日热帖」区块的展开状态。 */
@@ -41,13 +44,18 @@ const PrefsCtx = createContext<PrefsApi | null>(null);
 
 export function PrefsProvider({ children }: { children: React.ReactNode }) {
   const [prefs, setPrefs] = useState<AppPrefs>(getPrefs);
+  const [prefsReady, setPrefsReady] = useState(() => hasBootScheme());
   const [fontsReady] = useFonts({
     JetBrainsMono: require('../../assets/fonts/JetBrainsMono-Regular.ttf'),
     IBMPlexMono: require('../../assets/fonts/IBMPlexMono-Regular.ttf'),
     FiraCode: require('../../assets/fonts/FiraCode-Regular.ttf'),
   });
   useEffect(() => {
-    void hydratePrefs().then(setPrefs);
+    void hydratePrefs().then((next) => {
+      applyScheme(next.scheme);
+      setPrefs(next);
+      setPrefsReady(true);
+    });
     return subscribePrefs(() => setPrefs(getPrefs()));
   }, []);
   useEffect(() => {
@@ -57,6 +65,7 @@ export function PrefsProvider({ children }: { children: React.ReactNode }) {
     ...prefs,
     fontFactor: FONT_FACTOR[prefs.fontSize],
     codeFontsReady: fontsReady,
+    prefsReady,
     setFontSize: async (fontSize) => {
       await patchPrefs({ fontSize });
     },
@@ -99,7 +108,7 @@ export function PrefsProvider({ children }: { children: React.ReactNode }) {
     setCodePrettyJson: async (codePrettyJson) => {
       await patchPrefs({ codePrettyJson });
     },
-  }), [prefs, fontsReady]);
+  }), [prefs, fontsReady, prefsReady]);
   return <PrefsCtx.Provider value={value}>{children}</PrefsCtx.Provider>;
 }
 

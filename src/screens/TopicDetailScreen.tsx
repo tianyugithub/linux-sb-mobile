@@ -68,6 +68,7 @@ import {
   type DialogState,
   type SheetItem,
 } from '../components/ui';
+import { commentsEmptyKind } from '../utils/comments-empty';
 import { collectArticleImages, hasLockedReplyVisible, uniqueImages } from '../utils/article';
 import { classifyAppHref } from '../utils/links';
 import { copyText, shareText } from '../utils/share';
@@ -1408,6 +1409,16 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
   const authorUid = author?.uid || dto?.authorId || current.authorId || '';
   const opIcon = C.muted;
   const comments = commentsQuery.data?.items ?? [];
+  const commentsPending = commentsQuery.loading || (commentsQuery.fetching && comments.length === 0);
+  const commentsEmpty = commentsEmptyKind({
+    hasComments: comments.length > 0,
+    loading: commentsPending,
+    fetching: commentsQuery.fetching,
+    error: commentsQuery.error,
+    replyCount: dto?.replyCount ?? current.replies ?? 0,
+    loggedIn: nav.loggedIn,
+    loginRequired: commentsQuery.data?.loginRequired,
+  });
   const hasNextComments = Boolean(commentsQuery.data?.nextCursor);
   const targetReplyId = seekReplyId || replyId;
   const shownPage = commentPage === 0 ? (commentsQuery.data?.page ?? 1) : commentPage;
@@ -2059,9 +2070,12 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
           </View>
         </View>
         {commentsQuery.error ? <StatusBlock error={commentsQuery.error} onRetry={commentsQuery.reload} /> : null}
-        {commentsQuery.loading && !comments.length ? <ContentSkeleton variant="comments" /> : null}
-        {!comments.length && !commentsQuery.loading && !commentsQuery.error ? (
-          <Text style={styles.quoteText}>{nav.loggedIn ? '还没有回复。' : '评论登录后可见。'}</Text>
+        {commentsPending ? <ContentSkeleton variant="comments" /> : null}
+        {commentsEmpty === 'retry' ? (
+          <StatusBlock error="评论暂时没加载出来" onRetry={commentsQuery.reload} />
+        ) : null}
+        {commentsEmpty === 'login' || commentsEmpty === 'empty' ? (
+          <Text style={styles.quoteText}>{commentsEmpty === 'login' ? '评论登录后可见。' : '还没有回复。'}</Text>
         ) : null}
         {commentTree.roots.map((item) => {
           const kids = commentTree.childrenOf.get(item.id) ?? [];

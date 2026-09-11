@@ -1,4 +1,5 @@
 import { Appearance } from 'react-native';
+import { readBootScheme, writeBootScheme } from '../services/scheme-boot';
 
 export type ColorScheme = 'light' | 'dark';
 
@@ -221,8 +222,9 @@ export const SCHEME_LABEL: Record<ColorScheme, string> = {
   light: '浅色',
 };
 
-let scheme: ColorScheme = 'dark';
-export let C: Palette = palettes.dark;
+let scheme: ColorScheme = readBootScheme();
+export let C: Palette = palettes[scheme];
+Appearance.setColorScheme(scheme);
 
 const listeners = new Set<() => void>();
 const styleSyncers = new Set<() => void>();
@@ -267,6 +269,7 @@ export function applyScheme(next: ColorScheme) {
   if (scheme === next && C.scheme === next) return;
   scheme = next;
   C = palettes[next];
+  writeBootScheme(next);
   styleSyncers.forEach((fn) => fn());
   listeners.forEach((fn) => fn());
 }

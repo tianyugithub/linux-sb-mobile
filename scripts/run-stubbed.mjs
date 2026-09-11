@@ -26,7 +26,7 @@ const out = join(tmpdir(), `lsb-stubbed-${process.pid}-${Date.now()}.mjs`);
 const stubs = {
   'react-native': `export const Platform = { OS: 'android', select: (o) => o.android ?? o.default };
 export const NativeModules = {};
-export const Appearance = { getColorScheme: () => 'dark', addChangeListener: () => ({ remove() {} }) };
+export const Appearance = { getColorScheme: () => 'dark', setColorScheme: () => {}, addChangeListener: () => ({ remove() {} }) };
 export const useColorScheme = () => 'dark';
 export const Dimensions = { get: () => ({ width: 390, height: 844 }) };
 export const PixelRatio = { get: () => 3 };

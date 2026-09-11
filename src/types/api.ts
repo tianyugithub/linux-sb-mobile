@@ -16,6 +16,11 @@ export type CursorPage<T> = {
    * 但后面还有更早的记录，所以翻页要靠这个判断「到头了没」。
    */
   hasRows?: boolean;
+  /**
+   * 主题评论：官网把楼层藏在「登录后可见」后面（游客皮 / 登录墙）。
+   * 有回复数但 items 为空时，UI 不能写成「还没有回复」。
+   */
+  loginRequired?: boolean;
 };
 
 /**

@@ -4,6 +4,7 @@ import { secureGet, secureSet } from './secure-value';
 import type { ColorScheme } from '../theme/palette';
 import type { CodeFontId, CodeSizeId, CodeThemeId } from '../theme/code-themes';
 import { configureAccessChannel, normalizeAccessChannel, type AccessChannel } from '../utils/linux-access';
+import { readBootScheme, writeBootScheme } from './scheme-boot';
 
 export type FontSizePref = 'small' | 'standard' | 'large';
 export type CodeThemePref = CodeThemeId;
@@ -72,7 +73,7 @@ export const DEFAULT_PREFS: AppPrefs = {
 
 const KEY = 'lsb.app.prefs';
 
-let current: AppPrefs = { ...DEFAULT_PREFS };
+let current: AppPrefs = { ...DEFAULT_PREFS, scheme: readBootScheme() };
 let hydrated = false;
 const listeners = new Set<() => void>();
 
@@ -156,6 +157,7 @@ export async function hydratePrefs() {
   current = parse(await readRaw());
   applyAccessChannel(current.accessChannel);
   applyH3First(current.h3First);
+  writeBootScheme(current.scheme);
   notify();
   return current;
 }
@@ -164,6 +166,7 @@ export async function patchPrefs(patch: Partial<AppPrefs>) {
   current = { ...current, ...patch };
   if (patch.accessChannel) applyAccessChannel(current.accessChannel);
   if (patch.h3First !== undefined) applyH3First(current.h3First);
+  if (patch.scheme) writeBootScheme(current.scheme);
   notify();
   await writeRaw(JSON.stringify(current));
   return current;

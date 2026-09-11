@@ -32,6 +32,8 @@
     "postinstall": "node scripts/patch-rn-webview.mjs",
     "check:store": "node scripts/run-stubbed.mjs scripts/check-store.ts",
     "check:session": "node scripts/run-stubbed.mjs scripts/check-session.ts",
+    "check:theme": "node scripts/run-stubbed.mjs scripts/check-theme.ts",
+    "check:comments": "node scripts/run-stubbed.mjs scripts/check-comments.ts",
     "check:apk": "npx tsx scripts/check-apk-version.ts"
   },
   "dependencies": {
