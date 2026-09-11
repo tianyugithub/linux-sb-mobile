@@ -65,6 +65,15 @@ function resetAccountCaches() {
 const JS_START_AT = Date.now();
 const LAUNCH_NAV_GUARD_MS = 1500;
 
+/**
+ * Toast 里的用户名要截断：站内有 40 多个字的用户名（实测，
+ * 「九天揽明月五洋缚蛟龙…」那种），整串弹出来会占满整屏。
+ */
+function toastName(name: string): string {
+  const text = (name || '').trim();
+  return text.length > 10 ? `${text.slice(0, 10)}…` : text;
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -437,6 +446,12 @@ function AppRoot() {
       resetAccountCaches();
       setStack([]);
       setTab('profile');
+      /*
+       * 登录成功后必须给一句反馈：以前这里只是静默切到「我的」，
+       * 用户点完「登录」看不出到底成没成（尤其是网络慢、界面没变化的那一两秒）。
+       * 积分/未读数在后台补，提示先弹 —— 别让提示等这两个请求。
+       */
+      showToast(`登录成功，欢迎回来 ${toastName(session.user.name)}`.trim());
       try {
         const points = await api.points();
         setCheckedIn(points.checkedIn);
@@ -457,6 +472,7 @@ function AppRoot() {
       resetAccountCaches();
       setStack([]);
       setTab('profile');
+      showToast(`注册成功，已自动登录 ${toastName(session.user.name)}`.trim());
       try {
         const points = await api.points();
         setCheckedIn(points.checkedIn);
@@ -479,6 +495,8 @@ function AppRoot() {
       setUnread(0);
       void rememberUnread(0);
       setStack([]);
+      // 与登录对称：退出也要有反馈，否则界面只是「变回访客」，用户不确定退没退成
+      showToast('已退出登录');
       try {
         await api.logout();
       } catch {
