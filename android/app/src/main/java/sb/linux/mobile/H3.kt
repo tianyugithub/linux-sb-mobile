@@ -101,6 +101,22 @@ object H3 {
     return host == "linux.sb" || host.endsWith(".linux.sb")
   }
 
+  /**
+   * 所有方法都走 QUIC，写请求（登录、回帖、投票、人机验证）也一样。
+   *
+   * 曾经只放 GET / HEAD 过去，理由是「写请求伴随跳转 + Set-Cookie，QUIC 这条路的跳转收集没做扎实」。
+   * 实测证明那个理由站不住，而且代价很大：
+   *  - Cronet 的回调里 `onRedirectReceived` 拿得到 `Location`（我们还会在缺头时补上），
+   *    JS 侧（live.ts 的 linuxRequest、upstream-auth 的 loginWithLinux）本来就按 `redirect: 'manual'`
+   *    自己走跳转链、逐跳累积 Set-Cookie；H3 返回 3xx + Location + X-Lsb-Set-Cookie 正好是它要的形状。
+   *  - 反过来，某些网络（用户这台手机就是）对 `*.linux.sb` 的 **TCP+TLS 直接 RST**，
+   *    只有 QUIC 通得过。把写请求赶回 TCP，等于登录、回帖、人机验证在那个网络上全废
+   *    （实测：`cap.linux.sb/…/challenge` 的 POST 走 TCP 必失败，而同一 host 的 GET 走 QUIC 全 200）。
+   *
+   * 仍然不接管 CONNECT（WebView 隧道那类），其余交给 Cronet，失败照旧回落 TCP（见 H3Interceptor）。
+   */
+  fun supportsMethod(method: String): Boolean = !method.equals("CONNECT", ignoreCase = true)
+
   fun execute(request: Request, cancelled: () -> Boolean): Response {
     val ctx = appContext ?: throw IOException("H3 未初始化")
     val host = request.url.host.lowercase()
@@ -249,6 +265,7 @@ object H3 {
     private val sink = ByteArrayOutputStream()
     private val buffer = ByteBuffer.allocateDirect(64 * 1024)
     private var info: UrlResponseInfo? = null
+    private var redirectLocation: String? = null
 
     override fun onRedirectReceived(
       urlRequest: UrlRequest,
@@ -263,6 +280,21 @@ object H3 {
        * 登录/会话会静默失效。宁可返回 3xx，也不要悄悄丢 cookie。
        */
       info = responseInfo
+      // 诊断：确认重定向响应里带没带 Location / Set-Cookie —— 上层（live.ts）靠 Location 自己走跳转，
+      // 靠 Set-Cookie 维持会话；Cronet 对这两个头在重定向响应上的暴露情况必须实测确认。
+      val redirectHeaders = responseInfo.allHeaders
+      Log.i(
+        TAG,
+        "redirect ${responseInfo.httpStatusCode} -> $newLocationUrl " +
+          "location=${redirectHeaders["Location"] ?: redirectHeaders["location"] ?: "（无）"} " +
+          "set-cookie=${(redirectHeaders["Set-Cookie"] ?: redirectHeaders["set-cookie"])?.size ?: 0}",
+      )
+      /*
+       * 把 Location 明确补进响应头：Cronet 的重定向响应不一定通过 allHeaders 暴露它，
+       * 而上层的跳转逻辑只认这个头。丢了它，登录这种「POST 后 302」的流程会停在原地
+       * （表现为「登录状态未同步」）。
+       */
+      redirectLocation = newLocationUrl
       urlRequest.cancel()
     }
 
@@ -310,6 +342,9 @@ object H3 {
       responseInfo.allHeaders.forEach { (name, values) ->
         if (!name.startsWith(":")) values.forEach { headers.add(name, it) }
       }
+      redirectLocation?.let { target ->
+        if (headers["Location"] == null) headers.add("Location", target)
+      }
       val bytes = sink.toByteArray()
       /*
        * Cronet 已经在传输层把 gzip 解开了，却仍然留着 `Content-Encoding: gzip`。
@@ -318,7 +353,7 @@ object H3 {
        */
       val gzipped = bytes.size > 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()
       if (!gzipped) headers.removeAll("Content-Encoding")
-      val built = headers.build()
+      val built = headers.build().withExposedSetCookies()
       val magic = if (bytes.size > 1) "%02x%02x".format(bytes[0], bytes[1]) else "--"
       Log.d(
         TAG,

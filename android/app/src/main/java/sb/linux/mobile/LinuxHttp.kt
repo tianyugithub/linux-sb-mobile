@@ -38,8 +38,16 @@ object LinuxHttp {
       .protocols(listOf(Protocol.HTTP_1_1))
       .connectionPool(ConnectionPool(4, 30, TimeUnit.SECONDS))
       .eventListener(RouteWatcher())
-      .addInterceptor(H3Interceptor())
+      /*
+       * H3 排在镜像改写**之后**：判定要看请求最终发往哪个域名。
+       *
+       * 反过来的话，DoH / 直连通道里那些「URL 还写着 lsb.miapi.cc」的请求（缓存里的头像、图片，
+       * 或旧镜像链接）会先被 H3 判成「不是官网域名」而跳过，再被改写成 linux.sb 走 TCP ——
+       * 而这条网络上 `*.linux.sb` 的 TCP+TLS 恰好是被 RST 的（实测 connectFailed lsb.miapi.cc →
+       * 实际连的是 Cloudflare IP，SocketException: Connection reset），图就永远加载不出来。
+       */
       .addInterceptor(LinuxMirrorInterceptor())
+      .addInterceptor(H3Interceptor())
       .addInterceptor(RetryInterceptor())
       .addNetworkInterceptor(ExposeSetCookieInterceptor())
       .apply {
@@ -65,19 +73,21 @@ object LinuxHttp {
 
 /**
  * 先试 HTTP/3（QUIC），失败再交给后面的 TlsFrag 路径。
- * 放在镜像拦截器之前：要看到官网域名，才判断得出该不该走 QUIC。
+ * 排在镜像改写之后：拿到的已经是最终域名（官网或镜像），判定才不会漏。
+ * 写请求（登录 / 回帖 / 人机验证）也走 QUIC，理由见 H3.supportsMethod。
  */
 private class H3Interceptor : Interceptor {
   override fun intercept(chain: Interceptor.Chain): Response {
     val request = chain.request()
     if (!H3.shouldUse(request.url)) return chain.proceed(request)
-    // 写请求（登录/回帖/投票）伴随跳转与 Set-Cookie，QUIC 这条路的跳转收集还不完善，
-    // 交回原来的 TLS 分片路径，见 H3.supportsMethod 的说明。
     if (!H3.supportsMethod(request.method)) return chain.proceed(request)
     return try {
       H3.execute(request) { chain.call().isCanceled() }
     } catch (error: Exception) {
-      android.util.Log.i("LinuxH3", "回落 TCP：${error.message}")
+      android.util.Log.i(
+        "LinuxH3",
+        "回落 TCP：${request.method} ${request.url.encodedPath} — ${error.javaClass.simpleName}: ${error.message}",
+      )
       chain.proceed(request)
     }
   }
@@ -110,6 +120,10 @@ private class RetryInterceptor : Interceptor {
   }
 }
 
+/**
+ * 传输层的失败以前是静默的：write 请求在 DoH 通道下被 RST，只能从「JS 侧 fetch 抛错」倒推，
+ * 看不出是 DNS、连接还是握手挂的。这里把每一步都留一条日志（dogfood 时按 lsb-net 抓）。
+ */
 private class RouteWatcher : EventListener() {
   override fun connectFailed(
     call: Call,
@@ -119,6 +133,19 @@ private class RouteWatcher : EventListener() {
     ioe: IOException,
   ) {
     DohDns.instance.markFailed(call.request().url.host, inetSocketAddress.address)
+    android.util.Log.w(
+      "lsb-net",
+      "connectFailed ${call.request().url.host} ${inetSocketAddress.address?.hostAddress} " +
+        "${ioe.javaClass.simpleName}: ${ioe.message}",
+    )
+  }
+
+  override fun callFailed(call: Call, ioe: IOException) {
+    android.util.Log.w(
+      "lsb-net",
+      "callFailed ${call.request().method} ${call.request().url.host}${call.request().url.encodedPath} " +
+        "${ioe.javaClass.simpleName}: ${ioe.message}",
+    )
   }
 }
 

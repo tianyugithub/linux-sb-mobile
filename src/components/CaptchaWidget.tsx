@@ -136,11 +136,14 @@ function NativeCaptcha({ onToken, config }: { onToken: (value: string | null) =>
               })
                 .then(async (res) => {
                   const text = await res.text();
+                  console.warn('[cap] resp', res.status, `${text.length}B`, text.slice(0, 160));
                   viewRef.current?.injectJavaScript(
                     `window.__lsbCapDone(${JSON.stringify(id)}, true, ${res.status}, ${JSON.stringify(text)}); true;`,
                   );
                 })
                 .catch((error) => {
+                  // 传输失败（含 QUIC 与 TCP 都挂掉）以前只看到组件报「验证失败」，看不出是哪一步。
+                  console.warn('[cap] fail', method, url, String(error));
                   viewRef.current?.injectJavaScript(
                     `window.__lsbCapDone(${JSON.stringify(id)}, false, 0, ${JSON.stringify(String(error))}); true;`,
                   );
