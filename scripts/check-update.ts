@@ -7,6 +7,7 @@
 import { APP_VERSION, PROJECT_URL } from '../src/data/app-info';
 import { compareVersions, formatApkSize, parseRepo, parseVersion, pickReleaseApk, updatePromptText } from '../src/services/app-update';
 import { githubAccessUrls, githubBrowseUrl, isGithubUrl } from '../src/utils/github-access';
+import pkg from '../package.json';
 
 let fails = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -18,6 +19,7 @@ console.log('检查更新 · 纯逻辑回归');
 
 /* ── 项目主页 → owner/repo ─────────────────────────────────────── */
 const ref = parseRepo(PROJECT_URL);
+check('package.json 与 app.json 同版本', pkg.version === APP_VERSION, `${pkg.version} / ${APP_VERSION}`);
 check('项目主页已配置', Boolean(PROJECT_URL), PROJECT_URL || '（空）');
 check('能解析出 owner/repo', ref?.owner === 'tianyugithub' && ref?.repo === 'linux-sb-mobile', JSON.stringify(ref));
 check('带 .git 后缀也能解析', parseRepo('https://github.com/a/b.git')?.repo === 'b');
@@ -35,7 +37,7 @@ check('空值当 0', JSON.stringify(parseVersion('')) === '[0]', JSON.stringify(
 /* ── 版本比较 ─────────────────────────────────────────────────── */
 check('相同版本相等', compareVersions('0.1.0', 'v0.1.0') === 0);
 check('补零后相等', compareVersions('0.1', '0.1.0') === 0);
-check('高位更大', compareVersions('0.2.0', APP_VERSION) > 0);
+check('高位更大', compareVersions('9.0.0', APP_VERSION) > 0);
 check('按数值比而不是字符串', compareVersions('0.1.10', '0.1.9') > 0);
 check('低位更小', compareVersions('0.0.9', APP_VERSION) < 0);
 check(

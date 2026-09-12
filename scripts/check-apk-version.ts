@@ -54,6 +54,11 @@ function findAapt2(): string | null {
 
 const fails: string[] = [];
 
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: string };
+if (String(pkg.version ?? '') !== version) {
+  fails.push(`package.json(${pkg.version || '空'}) 与 app.json(${version}) 不一致`);
+}
+
 /* ── native 侧：APK 清单里的 versionName / versionCode ─────────────── */
 const aapt2 = findAapt2();
 if (!aapt2) {
