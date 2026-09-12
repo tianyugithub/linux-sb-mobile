@@ -10,6 +10,7 @@ import { subscribeForums } from '../services/live';
 import { C, registerStyleSync, type Palette } from '../theme/palette';
 import { nutThemeFor } from '../theme/nut-mine';
 import { forumHasDot, hydrateForumSeen, markForumSeen } from '../utils/forum-seen';
+import { chromePad, useAppInsets } from '../navigation/nav';
 
 const GROUP_ORDER = ['官方', '交流', '发现'] as const;
 
@@ -134,6 +135,7 @@ function ForumsBody({
 }) {
   const query = useAsync(() => api.forums().then((result) => result.items.map(mapForum)), [], 'forums:boards');
   const boards = query.data ?? [];
+  const insets = useAppInsets();
   const [rail, setRail] = useState('全部');
   const [, setSeenRev] = useState(0);
 
@@ -169,7 +171,7 @@ function ForumsBody({
 
   return (
     <View style={styles.page}>
-      <View style={styles.header}>
+      <View style={[styles.header, chromePad(insets.top)]}>
         <Text style={styles.pageTitle}>版块</Text>
         <SearchPill onPress={onSearch} />
       </View>

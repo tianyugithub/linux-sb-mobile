@@ -19,15 +19,13 @@ import javax.net.ssl.SSLSocketFactory
 /**
  * DNS over HTTPS。
  *
- * 镜像通道：lsb.miapi.cc / cap-lsb.miapi.cc 钉到美国机 154.12.50.175，
- * HTTP 反代到官网（SNI 是镜像域名）。
  * DoH 通道：只问 stellafortuna query-dns，拿到 Cloudflare IP 后再直连 linux.sb。
  * 直连通道：先探测写死的 Cloudflare Anycast，后台再用 1.1.1.1 / 8.8.8.8。
  * 国内运营商 DNS、以及阿里云 / DNSPod 的 DoH，会把 linux.sb 污染成
  * Dropbox / Facebook 的地址，TLS 必然失败。
  *
- * GitHub 用阿里云 DoH / 香港节点（20.205.243.x）；网页走内置浏览器即可打开。
- * 安装包和 API 另走 gh-proxy 镜像。
+ * GitHub：先信系统 DNS（用户 VPN 会给出 140.82.x 这类真地址），污染再回落到
+ * 香港节点（20.205.243.x）和阿里云 DoH。挂了 VPN 时不能一上来就钉香港。
  */
 class DohDns : Dns {
   private val cache = ConcurrentHashMap<String, Cached>()
@@ -77,10 +75,8 @@ class DohDns : Dns {
       }
     }
 
-    fallbackGithub(host)?.let { fallback ->
-      cache[host] = Cached(fallback, now + 30_000)
-      Thread({ refreshGithub(host) }, "gh-doh").apply { isDaemon = true; start() }
-      return fallback
+    if (isGithubFamily(host)) {
+      return lookupGithub(hostname, host, now)
     }
 
     for (endpoint in GITHUB_DOH) {
@@ -132,6 +128,36 @@ class DohDns : Dns {
       if (merged.isEmpty()) return
       cache[host] = Cached(merged.toList(), now + LINUX_TTL_MS)
     }
+  }
+
+  private fun lookupGithub(hostname: String, host: String, now: Long): List<InetAddress> {
+    val system = try {
+      Dns.SYSTEM.lookup(hostname)
+    } catch (_: Exception) {
+      emptyList()
+    }
+    val pin = fallbackGithub(host).orEmpty()
+    val chosen = preferUnpoisoned(system, pin)
+    val systemClean = system.filterNot { isPoison(it) }
+    if (chosen.isNotEmpty()) {
+      cache[host] = Cached(chosen, now + 30_000)
+      if (systemClean.isEmpty()) {
+        Thread({ refreshGithub(host) }, "gh-doh").apply { isDaemon = true; start() }
+      }
+      android.util.Log.i(
+        "lsb-dns",
+        "github $host via ${if (systemClean.isNotEmpty()) "system" else "pin"} ${chosen.joinToString { addrKey(it) }}",
+      )
+      return chosen
+    }
+    for (endpoint in GITHUB_DOH) {
+      val resolved = query(endpoint, host) ?: continue
+      val accepted = resolved.addresses.filterNot { isPoison(it) }
+      if (accepted.isEmpty()) continue
+      cache[host] = Cached(accepted, resolved.until)
+      return accepted
+    }
+    return if (pin.isNotEmpty()) pin else Dns.SYSTEM.lookup(hostname)
   }
 
   private fun refreshGithub(host: String) {
@@ -267,14 +293,25 @@ class DohDns : Dns {
     )
 
     private fun needsDoh(host: String): Boolean {
-      return isLinuxHost(host)
-        || isMirrorHost(host)
-        || host == "github.com"
+      return isLinuxHost(host) || isMirrorHost(host) || isGithubFamily(host)
+    }
+
+    internal fun isGithubFamily(host: String): Boolean {
+      return host == "github.com"
         || host.endsWith(".github.com")
         || host == "github.githubassets.com"
         || host.endsWith(".githubassets.com")
         || host.endsWith(".githubusercontent.com")
         || host == "githubusercontent.com"
+    }
+
+    internal fun preferUnpoisoned(
+      system: List<InetAddress>,
+      fallback: List<InetAddress>,
+    ): List<InetAddress> {
+      val clean = system.filterNot { isPoison(it) }
+      if (clean.isNotEmpty()) return clean
+      return fallback.filterNot { isPoison(it) }
     }
 
     private fun isLinuxHost(host: String): Boolean {
@@ -287,18 +324,6 @@ class DohDns : Dns {
 
     private fun pinned(hostname: String): List<InetAddress>? {
       val host = hostname.lowercase()
-      // 只钉镜像主机。linux.sb 直连必须走 Cloudflare，不能再指到美国机。
-      if (isMirrorHost(host)) {
-        return listOf(
-          ipv4(
-            host,
-            LinuxAccess.MIRROR_A,
-            LinuxAccess.MIRROR_B,
-            LinuxAccess.MIRROR_C,
-            LinuxAccess.MIRROR_D,
-          ),
-        )
-      }
       if (host == "stellafortuna.ddd.oaifree.com") {
         return listOf(
           ipv4(host, 104, 21, 16, 56),
@@ -380,7 +405,7 @@ class DohDns : Dns {
       return false
     }
 
-    private fun isPoison(addr: InetAddress): Boolean {
+    internal fun isPoison(addr: InetAddress): Boolean {
       val bytes = addr.address ?: return true
       if (bytes.size != 4) return true
       val a = bytes[0].toInt() and 0xFF

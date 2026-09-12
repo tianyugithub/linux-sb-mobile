@@ -7,6 +7,7 @@ import { getAccessToken } from '../services/session';
 import { writeLinuxCookies } from '../utils/site-cookies';
 import { classifyAppHref, hostLabel, isHttpUrl } from '../utils/links';
 import { adoptAccessUrl, officialLinuxUrl, viaAccess } from '../utils/linux-access';
+import { chromePad, useAppInsets } from '../navigation/nav';
 import { C, registerStyleSync, type Palette } from '../theme/palette';
 
 const CHROME_UA = Platform.select({
@@ -36,6 +37,7 @@ export function InAppBrowser({
   onAppHref?: (href: string) => void;
 }) {
   const viewRef = useRef<WebView>(null);
+  const insets = useAppInsets();
   const [ready, setReady] = useState(false);
   const [cookieHeader, setCookieHeader] = useState('');
   const [uri, setUri] = useState(() => viaAccess(url));
@@ -107,7 +109,7 @@ export function InAppBrowser({
 
   return (
     <View style={styles.root}>
-      <View style={styles.header}>
+      <View style={[styles.header, chromePad(insets.top)]}>
         <Pressable onPress={goBack} hitSlop={8} style={styles.headerBtn} accessibilityLabel="返回">
           <Ionicons name="chevron-back" size={22} color={C.muted} />
         </Pressable>

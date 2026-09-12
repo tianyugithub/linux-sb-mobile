@@ -339,6 +339,75 @@ export type TopicRedPacketDto = {
   statusUrl: string;
 };
 
+/**
+ * 红包卡片下的「追加红包」（`.red-packet-topup`，只有楼主可见）：
+ * `POST /red_packet_topup`，提交份数 / 总积分，并带上页面给的 `expected_*`（乐观锁）。
+ * 限值、文案一律取自页面。
+ */
+export type TopicRedPacketTopupDto = {
+  /** 「追加红包」 */
+  title: string;
+  /** 「结算期截止 …，追加后不延长结算期。」 */
+  note: string;
+  distribution: 'random' | 'fixed';
+  /** 每份最小 / 最大积分（`data-red-packet-topup-minimum-amount` / `-maximum-amount`） */
+  minUnit: number;
+  maxUnit: number;
+  /** 平台可容纳的剩余积分（`data-red-packet-topup-points-capacity`） */
+  capacity: number;
+  countLabel: string;
+  countMin: number;
+  countMax: number;
+  count: string;
+  amountLabel: string;
+  amountMin: number;
+  amountMax: number;
+  amount: string;
+  /** 「每份至少 10 积分，最多 1000 积分」 */
+  hint: string;
+  /** 页面上的 hidden（_csrf / topic_id / expected_*），提交时原样带上 */
+  fields: Record<string, string>;
+  action: string;
+};
+
+/** 编辑页的「回帖排序」（`select[name=reply_order]`，发帖页没有这个字段）。 */
+export type TopicEditorReplyOrderDto = {
+  /** 页面上的字段名（「回帖排序」） */
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+};
+
+/**
+ * 编辑页的「编辑主帖」计费段（`.sb-limit-edit-time-quote`）。
+ * 官网在**每次**保存前都用 `data-sb-limit-edit-time-edit-confirm` + 「是否确认保存？」弹一次确认。
+ */
+export type TopicEditorCostDto = {
+  /** 「编辑主帖」 */
+  title: string;
+  /** 「本次免费；免费期 30 天，之后 5 积分起…」 */
+  note: string;
+  /** `sb_limit_edit_time_quoted_cost`，本次要扣的积分 */
+  cost: number;
+  /** 确认原文（页面属性本身，不含「是否确认保存？」） */
+  confirm: string;
+  /** `data-rules-url`：详细积分规则页 */
+  rulesUrl: string;
+};
+
+/** 编辑页的附件上传（`.attachment-uploader`，发帖页与回帖框也是同一套）。 */
+export type TopicAttachmentUploaderDto = {
+  /** `data-upload-url`，通常 `/attachment_upload` */
+  url: string;
+  /** `data-upload-max-mb` */
+  maxMb: number;
+  /** `input[accept]` 原文 */
+  accept: string;
+  multiple: boolean;
+  /** 「上传附件」按钮原文 */
+  label: string;
+};
+
 export type TopicEditorDto = {
   title: string;
   body: string;
@@ -346,6 +415,20 @@ export type TopicEditorDto = {
   forumId: string;
   forums: TopicComposeForumDto[];
   specialType: TopicSpecialType;
+  /**
+   * 已发布的特殊帖（红包 / 抽奖 / 发卡）在编辑页里设置段是**只读**的：
+   * 官网把 `topic_special_type` 换成 hidden（值就是原类型）、设置字段一个都不渲染，
+   * 只留一段官方说明（原文照抄，App 不自己编）。此时类型不可改，也不提交设置字段。
+   */
+  specialLock: { title: string; note: string } | null;
+  /** 回帖排序；发帖页没有 → null */
+  replyOrder: TopicEditorReplyOrderDto | null;
+  /** 编辑计费（只有编辑页有） */
+  editCost: TopicEditorCostDto | null;
+  /** 附件上传（发帖页 / 编辑页都有，没上传权限时页面不给这一段） */
+  attachment: TopicAttachmentUploaderDto | null;
+  /** 编辑页内联的删除主帖段（`.sb-limit-edit-time-inline-delete`） */
+  deleteLock: { note: string; confirm: string; rulesUrl: string } | null;
   lottery: TopicLotteryComposeDto | null;
   virtualCard: TopicVirtualCardComposeDto | null;
   redPacket: TopicRedPacketComposeDto | null;
@@ -356,6 +439,8 @@ export type TopicComposeInput = {
   body: string;
   forum: string;
   specialType?: TopicSpecialType;
+  /** 回帖排序（官网 `select[name=reply_order]`）：'0' 发帖时间顺序 / '1' 倒序 */
+  replyOrder?: string;
   lottery?: {
     originalType?: string;
     drawAt: string;
@@ -400,6 +485,10 @@ export type TopicDetailDto = {
   lottery: TopicLotteryDto | null;
   virtualCard: TopicVirtualCardDto | null;
   redPacket: TopicRedPacketDto | null;
+  /** 红包卡片下的「追加红包」；只有楼主、且红包还能追加时才有 */
+  redPacketTopup: TopicRedPacketTopupDto | null;
+  /** 删除主帖的官方确认（主题页表单上的 `data-confirm`，含免费/计费期限） */
+  deleteLock: { note: string; confirm: string; rulesUrl: string } | null;
   collections: TopicCollectionPickDto[];
 };
 
@@ -443,11 +532,25 @@ export type TopicVirtualCardDto = {
   notice: string;
 };
 
+export type CommentRedPacketReviewDto = {
+  /** 官网 `.red-packet-review-state` 的原文，例如「待楼主认可」。 */
+  label: string;
+  /** class 上的 is-pending / is-expired / is-exhausted；认不出就空。 */
+  state: 'pending' | 'expired' | 'exhausted' | '';
+  /**
+   * 楼主才有的操作。官网每个决定是一张独立表单：
+   * `POST /red_packet_review`，hidden `decision`（实测认可是 `valuable`）+ 按钮原文。
+   */
+  actions: { label: string; decision: string }[];
+};
+
 export type CommentDto = {
   /** 「精华竞猜 · 预测会/不会加精」：竞猜理由作为评议回帖发布时官方给的标签。 */
   essenceLabel?: string;
   /** 红包帖里领到红包的楼层：官方在楼层信息里挂的「+N」奖励标记。 */
   redPacket?: { points: number; tip: string } | null;
+  /** 红包帖「楼主认可」：待审楼层的状态，以及楼主能点的按钮（游客/其他人没有 actions）。 */
+  redPacketReview?: CommentRedPacketReviewDto | null;
   id: string;
   topicId: string;
   parentId: string | null;
@@ -898,4 +1001,8 @@ export type SearchResultDto = {
   topics: TopicDto[];
   users: UserDto[];
   forums: ForumDto[];
+  /** 创作者 / UR 称号等免积分。官网 `.meilisearch-search-cost-note.is-free`。 */
+  free: boolean;
+  /** 搜过一次之后官网发给后续翻页 / 换范围 / 排序的票据。 */
+  access: string;
 };

@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, Text, TextInput, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { api, mapUser } from '../services/api';
 import { ApiError } from '../services/client';
 import { useAsync } from '../hooks/useAsync';
@@ -11,6 +10,7 @@ import {
   ConfirmDialog,
   HubChips,
   Icon,
+  ScreenHeader,
   StatusBlock,
   UserAvatar,
   type DialogState,
@@ -53,8 +53,9 @@ export function SearchScreen() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const scope = SCOPE_VALUE[scopeTab];
   const sort = SORT_VALUE[sortTab];
-  const cost = result?.cost ?? meta.data?.cost ?? 1;
-  const costNote = result?.costNote ?? meta.data?.costNote ?? '每次提交搜索扣除 1 积分。确认后才会执行搜索。';
+  const free = Boolean(result?.free ?? meta.data?.free);
+  const cost = free ? 0 : (result?.cost ?? meta.data?.cost ?? 1);
+  const costNote = result?.costNote ?? meta.data?.costNote ?? (free ? '搜索免积分' : '每次提交搜索扣除 1 积分。确认后才会执行搜索。');
   const placeholder = scope === 'user'
     ? '搜索用户名'
     : (meta.data?.placeholder || '搜索标题、主题内容和回帖');
@@ -71,7 +72,13 @@ export function SearchScreen() {
     else setLoading(true);
     setError(null);
     try {
-      const data = await api.search({ q, scope: next.scope ?? scope, sort: next.sort ?? sort, page });
+      const data = await api.search({
+        q,
+        scope: next.scope ?? scope,
+        sort: next.sort ?? sort,
+        page,
+        access: result?.access,
+      });
       setResult((prev) => {
         if (!next.append || !prev) return data;
         return {
@@ -79,6 +86,8 @@ export function SearchScreen() {
           hits: [...prev.hits, ...data.hits],
           users: [...prev.users, ...data.users],
           topics: [...prev.topics, ...data.topics],
+          access: data.access || prev.access,
+          free: data.free || prev.free,
         };
       });
     } catch (err) {
@@ -86,6 +95,28 @@ export function SearchScreen() {
     } finally {
       setLoading(false);
       setPaging(false);
+    }
+  };
+
+  const performSearch = async () => {
+    const q = draft.trim();
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.search({
+        q,
+        scope,
+        sort: scope === 'user' ? undefined : sort,
+        charge: true,
+        free,
+      });
+      setResult(data);
+      if (data.balance) await nav.refreshMe(data.balance);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : '搜索失败');
+      throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -103,23 +134,18 @@ export function SearchScreen() {
       nav.open({ name: 'login' });
       return;
     }
+    if (meta.loading && meta.data === undefined) {
+      nav.toast('正在读取搜索规则…');
+      return;
+    }
+    if (free || cost <= 0) {
+      void performSearch().catch(() => undefined);
+      return;
+    }
     setDialog({
       title: '确认操作',
       text: `本次搜索将扣除 ${cost} 积分，确认继续吗？`,
-      onConfirm: async () => {
-        setLoading(true);
-        setError(null);
-        try {
-          const data = await api.search({ q, scope, sort: scope === 'user' ? undefined : sort, charge: true });
-          setResult(data);
-          if (data.balance) await nav.refreshMe(data.balance);
-        } catch (err) {
-          setError(err instanceof ApiError ? err.message : '搜索失败');
-          throw err;
-        } finally {
-          setLoading(false);
-        }
-      },
+      onConfirm: performSearch,
     });
   };
 
@@ -140,14 +166,8 @@ export function SearchScreen() {
 
   return (
     <View style={styles.flex}>
-      <LinearGradient colors={['#1B2433', '#0E1117']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.srHero}>
-        <View style={styles.srHeroBar}>
-          <Pressable onPress={nav.close} style={styles.iconButton} hitSlop={8}>
-            <Icon name="chevron-back" size={22} color="#fff" />
-          </Pressable>
-          <Text style={styles.srHeroTitle}>搜索</Text>
-          <View style={styles.headerSideRight} />
-        </View>
+      <ScreenHeader title="搜索" />
+      <View style={styles.srHero}>
         <View style={styles.srFieldWrap}>
           <Icon name="search-outline" size={18} color={C.dim} />
           <TextInput
@@ -170,11 +190,11 @@ export function SearchScreen() {
             <Text style={styles.srGoText}>搜索</Text>
           </Pressable>
         </View>
-        <View style={styles.srCostPill}>
-          <Icon name="information-circle-outline" size={14} color={C.orange} />
-          <Text style={styles.srCostText}>{costNote}</Text>
+        <View style={[styles.srCostPill, free && styles.srCostPillFree]}>
+          <Icon name={free ? 'checkmark-circle-outline' : 'information-circle-outline'} size={14} color={free ? C.green : C.orange} />
+          <Text style={[styles.srCostText, free && styles.srCostTextFree]}>{costNote}</Text>
         </View>
-      </LinearGradient>
+      </View>
       <View style={styles.srChips}>
         <HubChips items={SCOPE_TABS} value={scopeTab} onChange={changeScope} />
         {scope !== 'user' && result?.q ? <HubChips items={SORT_TABS} value={sortTab} onChange={changeSort} /> : null}

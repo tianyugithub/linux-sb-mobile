@@ -6,6 +6,11 @@
  */
 import { commentsHidden, commentsRequireLogin, parseComments } from '../src/services/live';
 import { commentsEmptyKind } from '../src/utils/comments-empty';
+import {
+  commentsPageMatches,
+  shouldChaseLatestPage,
+  topicJumpPage,
+} from '../src/utils/comment-jump';
 
 let failed = 0;
 function check(label: string, ok: boolean, extra = '') {
@@ -61,5 +66,25 @@ check(
   commentsEmptyKind({ hasComments: true, loading: false, replyCount: 12, loggedIn: true }) === null,
 );
 
-console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：评论空态回归正常');
+console.log('\n评论翻页：未读跳转只落地一次');
+check('点进未读落到未读页', topicJumpPage({ unreadPage: 3, lastPage: 5 }, true) === 3);
+check('没有未读页就落到最后一页', topicJumpPage({ lastPage: 5 }, true) === 5);
+check('普通打开从第 1 页看', topicJumpPage({ unreadPage: 3, lastPage: 5 }, false) === 1);
+check('落地之后不再追最后一页', shouldChaseLatestPage({
+  follow: 'idle', latest: true, commentPage: 4, lastPage: 5,
+}) === false);
+check('刚进去、还没落到最后一页才追', shouldChaseLatestPage({
+  follow: 'auto', latest: true, commentPage: 1, lastPage: 5,
+}) === true);
+check('有未读页时不改去追最后一页', shouldChaseLatestPage({
+  follow: 'auto', latest: true, unreadPage: 3, commentPage: 2, lastPage: 5,
+}) === false);
+check('用户点了上一页之后新回复也不追', shouldChaseLatestPage({
+  follow: 'idle', latest: true, commentPage: 4, lastPage: 6,
+}) === false);
+check('切页时上一页的评论数据对不上', commentsPageMatches(4, 5) === false);
+check('定位模式（按楼层/回复 id）不按页码卡', commentsPageMatches(0, 5) === true);
+check('第 1 页和页码 1 对得上', commentsPageMatches(1, 1) === true);
+
+console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：评论空态 / 未读翻页回归正常');
 process.exit(failed ? 1 : 0);

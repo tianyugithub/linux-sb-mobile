@@ -58,7 +58,7 @@ class LinuxNotifyModule : Module() {
         val cls = Class.forName("sb.linux.mobile.LinuxAccess")
         cls.getMethod("setChannel", String::class.java).invoke(null, channel)
       } catch (_: Exception) {
-        val value = if (channel == "direct") "direct" else "mirror"
+        val value = if (channel == "direct") "direct" else "doh"
         context.getSharedPreferences("lsb_access", Context.MODE_PRIVATE)
           .edit()
           .putString("channel", value)

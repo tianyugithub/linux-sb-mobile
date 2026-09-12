@@ -15,6 +15,7 @@ import {
   pageSessionLook,
   pickPersistRecord,
   shouldClearSessionOnRefreshFailure,
+  shouldFollowThroughSignedOutWork,
 } from '../src/services/session-keep';
 import { handleAuthRequest } from '../src/services/upstream-auth';
 import {
@@ -23,7 +24,7 @@ import {
   sessionForToken,
   updateUpstreamCookies,
 } from '../src/services/site-session';
-import { getAccessToken, hydrateSession, setSession } from '../src/services/session';
+import { getAccessToken, hydrateSession, markSignedOut, setSession } from '../src/services/session';
 import { secureGet } from '../src/services/secure-value';
 
 let failed = 0;
@@ -116,6 +117,18 @@ check(
   'cookie 没了才清盘',
   shouldClearSessionOnRefreshFailure({ signedOut: false, hasAuthCookie: false }) === true,
 );
+check(
+  '退出善后：仍是这一次退出才继续',
+  shouldFollowThroughSignedOutWork({ startedGeneration: 3, currentGeneration: 3, signedOut: true }) === true,
+);
+check(
+  '退出善后：已经重新登录就停',
+  shouldFollowThroughSignedOutWork({ startedGeneration: 3, currentGeneration: 4, signedOut: false }) === false,
+);
+check(
+  '退出善后：generation 变了，旧的 POST /logout 停',
+  shouldFollowThroughSignedOutWork({ startedGeneration: 3, currentGeneration: 4, signedOut: true }) === false,
+);
 
 type Pages = Record<string, { html: string; setCookie?: string }>;
 let pages: Pages = {};
@@ -168,9 +181,9 @@ async function liveOfficial(): Promise<void> {
     return { status: res.status, url: res.url, html: await res.text() };
   };
   try {
-    const mirrorHome = await grab('https://lsb.miapi.cc', '/');
+    const mirrorHome = await grab('https://linux.sb', '/');
     check(
-      '镜像游客首页仍是 nav-mine-guest（旧逻辑会误杀）',
+      '游客首页仍是 logged-out',
       pageSessionLook(mirrorHome.html) === 'logged-out',
       `look=${pageSessionLook(mirrorHome.html)} len=${mirrorHome.html.length}`,
     );
@@ -274,12 +287,88 @@ async function integration(): Promise<void> {
     `status=${result.status} code=${result.error?.code ?? ''}`,
   );
   check('确认过期后内存会话拆掉', sessionForToken('lsb.test') == null);
+
+  // 重新挂上会话，测「退出还在飞时又登录」不得 POST /logout 把新 cookie 作废
+  restoreSiteSession({
+    sessions: {
+      'lsb.test': { cookies: 'bbs_auth=secret; bbs_csrf=x', refreshToken: 'lsr.test', user: USER },
+    },
+    refresh: { 'lsr.test': 'lsb.test' },
+  });
+  markSignedOut();
+  const logoutHits: string[] = [];
+  let resumeHome = () => {};
+  const homeLock = new Promise<void>((resolve) => {
+    resumeHome = resolve;
+  });
+  const innerFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = pathOf(input);
+    logoutHits.push(`${String(init?.method ?? 'GET').toUpperCase()} ${path}`);
+    if (path === '/') await homeLock;
+    if (path === '/logout') return new Response('', { status: 302, headers: { location: '/' } });
+    return innerFetch(input, init);
+  }) as typeof fetch;
+  await handleAuthRequest({
+    method: 'POST',
+    path: '/auth/logout',
+    query: {},
+    body: null,
+    token: 'lsb.test',
+  });
+  restoreSiteSession({
+    sessions: {
+      'lsb.fresh': { cookies: 'bbs_auth=fresh; bbs_csrf=x', refreshToken: 'lsr.fresh', user: USER },
+    },
+    refresh: { 'lsr.fresh': 'lsb.fresh' },
+  });
+  setSession('lsb.fresh', 'lsr.fresh');
+  resumeHome();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  check(
+    '重新登录后后台不得 POST /logout',
+    !logoutHits.some((hit) => hit.includes('/logout')),
+    `hits=${logoutHits.join(',')}`,
+  );
+  check(
+    '新会话还在',
+    Boolean(sessionForToken('lsb.fresh')) && hasBbsAuth(sessionForToken('lsb.fresh')?.cookies ?? ''),
+  );
+
+  restoreSiteSession({
+    sessions: {
+      'lsb.stale': { cookies: 'bbs_auth=stale; bbs_csrf=x', refreshToken: 'lsr.stale', user: USER },
+    },
+    refresh: { 'lsr.stale': 'lsb.stale' },
+  });
+  setSession('lsb.stale', 'lsr.stale');
+  let resumeMe = () => {};
+  const meLock = new Promise<void>((resolve) => {
+    resumeMe = resolve;
+  });
+  const fetchBeforeMe = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = pathOf(input);
+    if (path === '/mobile_menu') await meLock;
+    return fetchBeforeMe(input, init);
+  }) as typeof fetch;
+  pages = { '/mobile_menu': { html: challenge } };
+  const pendingMe = me('lsb.stale');
+  markSignedOut();
+  destroyUpstreamSession('lsb.stale');
+  resumeMe();
+  result = await pendingMe;
+  check(
+    '退出后飞着的 /users/me 不得把旧用户写回来',
+    result.status === 401,
+    `status=${result.status} code=${result.error?.code ?? ''}`,
+  );
 }
 
 async function main() {
   await liveOfficial();
   await integration();
-  console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：登录态保活（含现网菜单结构 + /users/me）');
+  console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：登录态保活（含现网菜单结构 + /users/me + 退出善后）');
   process.exit(failed ? 1 : 0);
 }
 

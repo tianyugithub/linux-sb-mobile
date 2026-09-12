@@ -12,7 +12,7 @@ import javax.net.SocketFactory
 /**
  * 把 TLS ClientHello 从 `linux.sb` 中间切开，发给只看单个记录的中间盒。
  *
- * 镜像通道 SNI 已经是 lsb.miapi.cc，不必拆。DoH / 直连才开。
+ * DoH / 直连都会拆 ClientHello；旧镜像通道已下线。
  * RECORD：同一条 ClientHello 拆成两个合法 TLS 记录（RFC 8446 §5.1），
  * Cloudflare 会重组；墙如果只扫单个记录就看不到完整名字。
  */

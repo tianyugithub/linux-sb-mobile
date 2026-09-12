@@ -18,8 +18,9 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /**
- * 国内直连 Cloudflare 常被重置；镜像走 lsb.miapi.cc。
+ * 国内直连 Cloudflare 常被重置。
  * 这里统一：HTTP/1.1、短超时、失败换 IP 再试、丢掉坏连接。
+ * 拦截器仍会把缓存里的旧镜像 URL 折回官网。
  */
 object LinuxHttp {
   @Volatile
@@ -39,12 +40,11 @@ object LinuxHttp {
       .connectionPool(ConnectionPool(4, 30, TimeUnit.SECONDS))
       .eventListener(RouteWatcher())
       /*
-       * H3 排在镜像改写**之后**：判定要看请求最终发往哪个域名。
+       * H3 排在域名改写**之后**：判定要看请求最终发往哪个域名。
        *
-       * 反过来的话，DoH / 直连通道里那些「URL 还写着 lsb.miapi.cc」的请求（缓存里的头像、图片，
-       * 或旧镜像链接）会先被 H3 判成「不是官网域名」而跳过，再被改写成 linux.sb 走 TCP ——
-       * 而这条网络上 `*.linux.sb` 的 TCP+TLS 恰好是被 RST 的（实测 connectFailed lsb.miapi.cc →
-       * 实际连的是 Cloudflare IP，SocketException: Connection reset），图就永远加载不出来。
+       * 反过来的话，缓存里那些「URL 还写着 lsb.miapi.cc」的请求会先被 H3 判成「不是官网」
+       * 而跳过，再被改写成 linux.sb 走 TCP —— 国内线路上 `*.linux.sb` 的 TCP+TLS
+       * 恰好可能被 RST。
        */
       .addInterceptor(LinuxMirrorInterceptor())
       .addInterceptor(H3Interceptor())
@@ -73,7 +73,7 @@ object LinuxHttp {
 
 /**
  * 先试 HTTP/3（QUIC），失败再交给后面的 TlsFrag 路径。
- * 排在镜像改写之后：拿到的已经是最终域名（官网或镜像），判定才不会漏。
+ * 排在域名改写之后：拿到的已经是官网域名，判定才不会漏。
  * 写请求（登录 / 回帖 / 人机验证）也走 QUIC，理由见 H3.supportsMethod。
  */
 private class H3Interceptor : Interceptor {

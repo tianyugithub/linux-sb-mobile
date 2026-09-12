@@ -977,6 +977,15 @@ export function useNbEditor({
     commit(insertAtCaret(valueRef.current, caretRef.current, item));
   };
 
+  /**
+   * 把一段 markdown 插到光标处（附件上传的「插入正文」用）。
+   * 所见即所得下先 `flush()` 把活文档拉平，免得覆盖掉还没回写的编辑内容。
+   */
+  const insert = async (text: string) => {
+    const markdown = await flush();
+    commit(insertAtCaret(markdown, caretRef.current, text));
+  };
+
   /** 极简（内联）状态下不给富文本入口，全屏里才放开。 */
   const richAllowed = richText === 'always' || fullscreen;
   const toolbar = (
@@ -1135,7 +1144,7 @@ export function useNbEditor({
     <>
       {fullscreen ? (
         <Modal visible animationType="slide" onRequestClose={() => setFullscreen(false)}>
-          <View style={[styles.nbFull, { paddingTop: insets.top, paddingBottom: insets.bottom + 6 }]}>
+          <View style={[styles.nbFull, { paddingBottom: insets.bottom + 6 }]}>
             <ScreenHeader title="全屏编辑" onBack={() => setFullscreen(false)} />
             <View style={styles.nbFullInner}>
               <View style={styles.nbFullBars}>
@@ -1221,6 +1230,8 @@ export function useNbEditor({
     uploadManager,
     flush,
     clear,
+    /** 附件上传后把返回的 markdown 插到光标处。 */
+    insert,
     /** 供外部按钮使用（底部回复框的表情/展开按钮）。 */
     focus: () => inputRef.current?.focus(),
     toggleEmoji: () => setEmojiOpen((open) => !open),

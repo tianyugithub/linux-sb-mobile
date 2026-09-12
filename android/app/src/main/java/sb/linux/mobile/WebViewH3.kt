@@ -15,7 +15,6 @@ import java.io.ByteArrayInputStream
  * scripts/patch-rn-webview.mjs 注入的钩子）把站内请求交过来，用 App 的 H3 层取回，再还给 WebView 渲染。
  *
  * 不接管的几种情况，一律返回 null 让它走原来的路（WebDnsProxy + TLS 分片）：
- *   • 镜像通道 —— 那条路本来就是走镜像域名，不需要也不应该绕过去；
  *   • 非 GET —— 拦截拿不到请求体，POST 交回代理；
  *   • Range / Upgrade —— 断点续传与 WebSocket 不适合整段缓冲。
  *
@@ -28,8 +27,6 @@ object WebViewH3 {
   @JvmStatic
   fun intercept(request: WebResourceRequest): WebResourceResponse? {
     if (!H3.isEnabled()) return null
-    // 与 H3.shouldUse 保持一致：DoH / 直连接管，镜像通道保持原样。
-    if (LinuxAccess.usingMirror()) return null
     val url = request.url ?: return null
     if (!"https".equals(url.scheme, ignoreCase = true)) return null
     val host = url.host?.lowercase() ?: return null

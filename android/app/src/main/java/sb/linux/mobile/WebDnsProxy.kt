@@ -19,6 +19,9 @@ import kotlin.concurrent.thread
  * 在本机起一个只监听 127.0.0.1 的 CONNECT 代理：解析用 DohDns，
  * TLS 仍由 WebView 和官网直接完成（不做中间人）。
  * DoH / 直连时把第一条 ClientHello 拆成两个 TLS 记录再送出。
+ *
+ * 代理只包 linux.sb。GitHub / Google 授权页必须走系统网络（用户 VPN），
+ * 否则会被钉到香港节点或先去 gh-proxy，挂了 VPN 反而打不开。
  */
 object WebDnsProxy {
   fun start(dns: Dns) {
@@ -45,14 +48,21 @@ object WebDnsProxy {
 
   private fun attachWebView(port: Int) {
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) return
-    val config = ProxyConfig.Builder()
+    val builder = ProxyConfig.Builder()
       .addProxyRule("127.0.0.1:$port")
-      .addDirect("127.0.0.1")
-      .addDirect("localhost")
-      .build()
+    if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)) {
+      // 反转旁路：名单里的才进代理。127.0.0.1 不能进名单，否则会绕回自己。
+      builder.addBypassRule("linux.sb")
+      builder.addBypassRule("*.linux.sb")
+      builder.setReverseBypassEnabled(true)
+    } else {
+      builder.addBypassRule("127.0.0.1")
+      builder.addBypassRule("localhost")
+      OAUTH_DIRECT.forEach { builder.addBypassRule(it) }
+    }
     try {
       ProxyController.getInstance().setProxyOverride(
-        config,
+        builder.build(),
         Executors.newSingleThreadExecutor(),
       ) {}
     } catch (_: Exception) {
@@ -192,4 +202,19 @@ object WebDnsProxy {
   }
 
   private val IPV4 = Regex("""^\d{1,3}(?:\.\d{1,3}){3}$""")
+
+  /** 反转旁路不可用时：这些域名不进本地代理，让 VPN / 系统栈自己连。 */
+  private val OAUTH_DIRECT = listOf(
+    "github.com",
+    "*.github.com",
+    "*.githubusercontent.com",
+    "*.githubassets.com",
+    "google.com",
+    "*.google.com",
+    "*.googleapis.com",
+    "*.gstatic.com",
+    "*.googleusercontent.com",
+    "*.recaptcha.net",
+    "accounts.youtube.com",
+  )
 }

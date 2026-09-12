@@ -46,6 +46,7 @@ import type {
   TopicComposeInput,
   TopicCollectionPickDto,
   TopicRedPacketDto,
+  TopicRedPacketTopupDto,
   TopicVirtualCardDto,
   UploadDto,
   UserDto,
@@ -53,7 +54,8 @@ import type {
 import { formatRelative } from '../utils/time';
 import { FEED_TABS, LEADERBOARD_TABS } from '../data/feed-nav';
 import { apiRequest } from './client';
-import { clearSession, getRefreshToken, markSignedOut, setSession } from './session';
+import { clearSession, getRefreshToken, markSignedOut, sessionAcceptsCookies, sessionGeneration, setSession } from './session';
+import { shouldFollowThroughSignedOutWork } from './session-keep';
 import { cookiesForToken } from './site-session';
 import { clearLinuxCookies, writeLinuxCookies } from '../utils/site-cookies';
 import { syncNotifySession } from 'linux-notify';
@@ -166,6 +168,7 @@ export const api = {
   login: async (input: { username?: string; password?: string; provider?: 'github' | 'google'; captchaToken?: string; oauthCookies?: string }) => {
     const session = await apiRequest<SessionDto>('POST', '/auth/login', { body: input, auth: false });
     setSession(session.token, session.refreshToken);
+    void import('./live').then((m) => m.bustLiveCache());
     void writeLinuxCookies(cookiesForToken(session.token) ?? '');
     return session;
   },
@@ -183,6 +186,8 @@ export const api = {
   },
   logout: async () => {
     markSignedOut();
+    const gen = sessionGeneration();
+    void import('./live').then((m) => m.bustLiveCache());
     try {
       await apiRequest<{ ok: boolean }>('POST', '/auth/logout');
     } finally {
@@ -190,6 +195,11 @@ export const api = {
       syncNotifySession('');
       await clearLinuxCookies();
       setTimeout(() => {
+        if (!shouldFollowThroughSignedOutWork({
+          startedGeneration: gen,
+          currentGeneration: sessionGeneration(),
+          signedOut: !sessionAcceptsCookies(),
+        })) return;
         void clearLinuxCookies();
       }, 1500);
     }
@@ -265,6 +275,29 @@ export const api = {
    */
   redPacketStatus: (id: string) =>
     apiRequest<{ ok: boolean; card: TopicRedPacketDto | null }>('GET', `/topics/${encodeURIComponent(id)}/red-packet`),
+  /**
+   * 楼主认可红包回复。官网是楼层上的 `POST /red_packet_review`
+   *（hidden `topic_id` / `reply_id` / `decision`，按钮原文「楼主认可」）。
+   */
+  reviewRedPacket: (topicId: string, commentId: string, decision: string) =>
+    apiRequest<{ comment: CommentDto; card: TopicRedPacketDto | null; message: string }>(
+      'POST',
+      `/topics/${encodeURIComponent(topicId)}/comments/${encodeURIComponent(commentId)}/red-packet-review`,
+      { body: { decision } },
+    ),
+  /**
+   * 追加红包（红包卡片里的 `.red-packet-topup-form`，只有楼主能发）。
+   * 服务端要求带上页面读到的 `expected_*`（乐观锁），所以份数/积分要按页面限值来。
+   */
+  topupRedPacket: (id: string, input: { count: string; amount: string }) =>
+    apiRequest<{ card: TopicRedPacketDto | null; topup: TopicRedPacketTopupDto | null; message: string }>(
+      'POST',
+      `/topics/${encodeURIComponent(id)}/red-packet-topup`,
+      { body: input },
+    ),
+  /** 上传附件（官网 `/attachment_upload`）→ 返回可直接插进正文的 markdown。 */
+  uploadAttachment: (file: { uri: string; name: string; type: string }) =>
+    apiRequest<{ url: string; markdown: string; name: string }>('POST', '/uploads/attachment', { body: file }),
   buyVirtualCard: (id: string, quantity = 1) =>
     apiRequest<{ ok: boolean; message: string; card: TopicVirtualCardDto | null }>('POST', `/topics/${encodeURIComponent(id)}/virtual-card`, {
       body: { quantity },
@@ -384,15 +417,16 @@ export const api = {
     apiRequest<{ ok: boolean; message: string }>('POST', '/profile/avatar-upload', { body: file }),
   upload: (file: { uri: string; name: string; type: string; target?: 'official' | 'r2' }) =>
     apiRequest<UploadDto>('POST', '/uploads', { body: file }),
-  search: (input: { q?: string; scope?: SearchScope | string; sort?: SearchSort | string; page?: number; charge?: boolean } = {}) =>
+  search: (input: { q?: string; scope?: SearchScope | string; sort?: SearchSort | string; page?: number; charge?: boolean; free?: boolean; access?: string } = {}) =>
     apiRequest<SearchResultDto>(input.charge ? 'POST' : 'GET', '/search', {
       query: input.charge ? undefined : {
         q: input.q,
         scope: input.scope,
         sort: input.sort,
         page: input.page,
+        access: input.access,
       },
-      body: input.charge ? { q: input.q, scope: input.scope, sort: input.sort, charge: true } : undefined,
+      body: input.charge ? { q: input.q, scope: input.scope, sort: input.sort, charge: true, free: input.free } : undefined,
     }),
 };
 

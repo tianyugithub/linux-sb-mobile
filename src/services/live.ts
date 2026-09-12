@@ -41,6 +41,8 @@ import type {
   TopicVirtualCardComposeDto,
   TopicRedPacketComposeDto,
   TopicRedPacketDto,
+  TopicRedPacketTopupDto,
+  TopicAttachmentUploaderDto,
 } from '../types/api';
 import { decodeBase64Json } from '../utils/base64';
 import { decodeEntities, firstGlyph } from '../utils/entities';
@@ -70,6 +72,7 @@ import { redactSecrets } from '../utils/redact';
 import { MockApiError, type MockRequest, type MockResponse } from './mock';
 import { cookiesForToken, sessionForToken, updateUpstreamCookies, updateUpstreamUser } from './site-session';
 import { sessionAcceptsCookies } from './session';
+import { keepAuthCookie } from './session-keep';
 import { isNativeApp, siteCredentials } from '../utils/runtime';
 import { syncNotifySession } from 'linux-notify';
 import { ESSENCE_REASON_MAX, ESSENCE_REASON_MIN } from '../data/essence';
@@ -327,8 +330,12 @@ function rememberCookies(next: string) {
   if (!next) return;
   // 退出后内存会话已拆掉，但飞着的请求还会带回 bbs_auth。
   if (hasLinuxSessionCookie(next) && !sessionForToken(currentToken)) return;
-  syncNotifySession(next);
-  void writeLinuxCookies(next);
+  const live = liveCookie();
+  const jar = !hasLinuxSessionCookie(next) && hasLinuxSessionCookie(live ?? '')
+    ? keepAuthCookie(next, live ?? '')
+    : next;
+  syncNotifySession(jar);
+  void writeLinuxCookies(jar);
 }
 
 function csrfFrom(html: string): string {
@@ -505,8 +512,8 @@ async function linuxRequestOnce(
     Accept: init?.accept ?? 'text/html,application/xhtml+xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'User-Agent': BROWSER_UA,
-    Referer: LINUX_ORIGIN + '/',
-    Origin: LINUX_ORIGIN,
+    Referer: `${liveBase()}/`,
+    Origin: liveBase(),
     ...init?.headers,
   };
   let method = init?.method ?? 'GET';
@@ -695,7 +702,7 @@ async function postAjaxForm(
     Accept: 'application/json, text/html;q=0.9',
   };
   if (referer) {
-    headers.Referer = referer.startsWith('http') ? referer : `${LINUX_ORIGIN}${referer.startsWith('/') ? referer : `/${referer}`}`;
+    headers.Referer = referer.startsWith('http') ? referer : `${liveBase()}${referer.startsWith('/') ? referer : `/${referer}`}`;
   }
   return linuxRequest(path, {
     method: 'POST',
@@ -1301,6 +1308,100 @@ export function parseTopicRedPacket(html: string): TopicRedPacketDto | null {
 export function parseRedPacketPanel(html: string): TopicRedPacketDto | null {
   if (!/<section[^>]*class="[^"]*red-packet-card/.test(html)) return null;
   return parseTopicRedPacket(html);
+}
+
+/**
+ * 红包卡片下的「追加红包」（官网 `.red-packet-topup`，只有楼主看得到）。
+ *
+ *   <section class="red-packet-topup"><strong>追加红包</strong>
+ *     <small>结算期截止 2026-09-15 02:24，追加后不延长结算期。</small>
+ *     <form class="red-packet-topup-form" method="post" action="/red_packet_topup"
+ *           data-red-packet-topup-distribution="random" data-red-packet-topup-minimum-amount="10"
+ *           data-red-packet-topup-maximum-amount="1000" data-red-packet-topup-points-capacity="99999500">
+ *       … hidden topic_id / expected_packet_count / expected_total_amount /
+ *         expected_remaining_count / expected_remaining_amount / _csrf …
+ *       <input type="number" name="red_packet_topup_count" min="1" max="950" value="1">
+ *       <input type="number" name="red_packet_topup_total_amount" min="10" max="950000" value="10">
+ *
+ * `expected_*` 是乐观锁：页面上的份数/积分为准，对不上服务端会拒，所以必须原样带回。
+ * 限值随剩余份数变化（max 就是还能追加多少），一律从页面读。
+ */
+export function parseTopicRedPacketTopup(html: string): TopicRedPacketTopupDto | null {
+  const block = extractClassBlock(html, 'red-packet-topup');
+  const form = block.match(/<form\b[^>]*red-packet-topup-form[^>]*>[\s\S]*?<\/form>/i)?.[0] || '';
+  if (!block || !form) return null;
+  const fields = parseFormFields(form);
+  const tagOf = (name: string) => form.match(new RegExp(`<input\\b[^>]*name="${name}"[^>]*>`, 'i'))?.[0] || '';
+  const numAttr = (tag: string, attr: string) => Number(tag.match(new RegExp(`\\b${attr}="(\\d+)"`, 'i'))?.[1] ?? 0) || 0;
+  const label = (name: string) => {
+    const re = /<label\b[^>]*>([\s\S]*?)<\/label>/gi;
+    let hit: RegExpExecArray | null;
+    while ((hit = re.exec(form))) {
+      if (new RegExp(`name="${name}"`).test(hit[1])) {
+        return decode(stripTags(first(hit[1], /<span\b[^>]*>([\s\S]*?)<\/span>/) || '')).trim();
+      }
+    }
+    return '';
+  };
+  const countTag = tagOf('red_packet_topup_count');
+  const amountTag = tagOf('red_packet_topup_total_amount');
+  return {
+    title: decode(stripTags(first(block, /<strong\b[^>]*>([\s\S]*?)<\/strong>/) || '')).trim(),
+    note: decode(stripTags(first(block, /<small\b[^>]*>([\s\S]*?)<\/small>/) || '')).trim(),
+    distribution: formAttr(form, 'data-red-packet-topup-distribution') === 'fixed' ? 'fixed' : 'random',
+    minUnit: Number(formAttr(form, 'data-red-packet-topup-minimum-amount')) || 0,
+    maxUnit: Number(formAttr(form, 'data-red-packet-topup-maximum-amount')) || 0,
+    capacity: Number(formAttr(form, 'data-red-packet-topup-points-capacity')) || 0,
+    countLabel: label('red_packet_topup_count'),
+    countMin: numAttr(countTag, 'min'),
+    countMax: numAttr(countTag, 'max'),
+    count: fields.red_packet_topup_count || '1',
+    amountLabel: label('red_packet_topup_total_amount'),
+    amountMin: numAttr(amountTag, 'min'),
+    amountMax: numAttr(amountTag, 'max'),
+    amount: fields.red_packet_topup_total_amount || '',
+    hint: decode(stripTags(first(block, /red-packet-topup-total[^>]*>([\s\S]*?)<\/span>/) || '')).trim(),
+    fields,
+    action: formActionPath(form, '/red_packet_topup'),
+  };
+}
+
+/**
+ * 追加红包：官网 `POST /red_packet_topup`（普通表单提交，成功后回到主题页）。
+ * 带 `expected_*`（页面读到的份数/积分），服务端据此判断期间有没有被别人领走。
+ */
+async function submitRedPacketTopup(topicId: string, count: string, amount: string) {
+  requireCookie();
+  const page = await fetchHtml(`/topic/${encodeURIComponent(topicId)}`, undefined, { fresh: true });
+  if (isLoginWall(page)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
+  const topup = parseTopicRedPacketTopup(page);
+  if (!topup) throw new MockApiError(400, 'UPSTREAM', '当前不能追加红包：可能不是楼主、已领完或结算期已结束');
+  const posted = await postForm(topup.action, {
+    ...topup.fields,
+    _csrf: topup.fields._csrf || csrfFrom(page),
+    topic_id: topup.fields.topic_id || topicId,
+    red_packet_topup_count: count.trim() || topup.count,
+    red_packet_topup_total_amount: amount.trim() || topup.amount,
+  }, false);
+  if (isLoginWall(posted.html) || jsonRejected(posted.json) || posted.status >= 400) {
+    throw new MockApiError(
+      posted.status >= 400 ? posted.status : 400,
+      'UPSTREAM',
+      String(posted.json?.message || posted.json?.tip || formError(posted.html, posted.flash || '追加失败')),
+    );
+  }
+  const failed = formError(posted.html, '');
+  if (failed && !/red-packet-card/.test(posted.html)) throw new MockApiError(400, 'UPSTREAM', failed);
+  bustTopicCache(topicId);
+  bustAccountCache();
+  const html = /red-packet-card/.test(posted.html)
+    ? posted.html
+    : await fetchHtml(`/topic/${encodeURIComponent(topicId)}`, undefined, { fresh: true });
+  return {
+    card: parseTopicRedPacket(html),
+    topup: parseTopicRedPacketTopup(html),
+    message: postedMessage(posted) || flashMessage(html) || '',
+  };
 }
 
 function parseTopicVirtualCard(html: string): TopicVirtualCardDto | null {
@@ -1949,6 +2050,105 @@ function formatCstEditAt(now = Date.now()): string {
   return `${cst.getUTCFullYear()}-${pad(cst.getUTCMonth() + 1)}-${pad(cst.getUTCDate())} ${pad(cst.getUTCHours())}:${pad(cst.getUTCMinutes())}`;
 }
 
+/**
+ * 红包帖楼层上的「楼主认可」。
+ *
+ * 官网在 `.post-meta` 里挂：
+ *   <span class="red-packet-review-state is-pending">待楼主认可</span>
+ *   <div class="red-packet-review-actions">
+ *     <form action="/red_packet_review">… decision=valuable …<button>楼主认可</button></form>
+ *   </div>
+ * 按钮只给楼主；其他人只看见状态。文案和 decision 一律取自页面。
+ */
+function parseRedPacketReview(block: string): CommentDto['redPacketReview'] {
+  const stateTag = block.match(/<span\b[^>]*class="[^"]*red-packet-review-state[^"]*"[^>]*>/i)?.[0] || '';
+  const label = decode(first(block, /red-packet-review-state[^>]*>([\s\S]*?)<\/span>/) || '').trim();
+  const actionHtml = block.match(/<div\b[^>]*class="[^"]*red-packet-review-actions[^"]*"[^>]*>[\s\S]*?<\/div>/i)?.[0]
+    || '';
+  const actions: { label: string; decision: string }[] = [];
+  const formRe = /<form\b[^>]*>[\s\S]*?<\/form>/gi;
+  let formHit: RegExpExecArray | null;
+  while ((formHit = formRe.exec(actionHtml))) {
+    if (!/red_packet_review/i.test(formHit[0])) continue;
+    const fields = parseFormFields(formHit[0]);
+    const button = stripTags(formHit[0].match(/<button\b[^>]*>([\s\S]*?)<\/button>/i)?.[1] || '').trim();
+    if (!button && !fields.decision) continue;
+    actions.push({
+      label: button || '楼主认可',
+      decision: fields.decision || 'valuable',
+    });
+  }
+  if (!label && !actions.length) return null;
+  const state: NonNullable<CommentDto['redPacketReview']>['state'] = /is-pending/.test(stateTag)
+    ? 'pending'
+    : /is-expired/.test(stateTag)
+      ? 'expired'
+      : /is-exhausted/.test(stateTag)
+        ? 'exhausted'
+        : '';
+  return { label, state, actions };
+}
+
+function extractRedPacketReviewForm(html: string, replyId: string, decision: string): { action: string; fields: Record<string, string> } | null {
+  const formRe = /<form\b[^>]*>[\s\S]*?<\/form>/gi;
+  let hit: RegExpExecArray | null;
+  const matches: string[] = [];
+  while ((hit = formRe.exec(html))) {
+    if (!/red_packet_review/i.test(hit[0])) continue;
+    const fields = parseFormFields(hit[0]);
+    if (fields.reply_id === replyId) matches.push(hit[0]);
+  }
+  const picked = matches.find((item) => parseFormFields(item).decision === decision) || matches[0];
+  if (!picked) return null;
+  return { action: formActionPath(picked, '/red_packet_review'), fields: parseFormFields(picked) };
+}
+
+async function submitRedPacketReview(topicId: string, replyId: string, decision: string) {
+  requireCookie();
+  const page = await fetchHtml(`/topic/${encodeURIComponent(topicId)}`, undefined, { fresh: true });
+  if (isLoginWall(page)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
+  const form = extractRedPacketReviewForm(page, replyId, decision.trim());
+  if (!form) throw new MockApiError(400, 'UPSTREAM', '当前回复不能认可，可能已处理或不是楼主');
+  const posted = await postForm(form.action, {
+    ...form.fields,
+    _csrf: form.fields._csrf || csrfFrom(page),
+    topic_id: form.fields.topic_id || topicId,
+    reply_id: form.fields.reply_id || replyId,
+    decision: decision.trim() || form.fields.decision || 'valuable',
+  });
+  if (jsonRejected(posted.json) || posted.status >= 400) {
+    throw new MockApiError(
+      posted.status >= 400 ? posted.status : 400,
+      'UPSTREAM',
+      String(posted.json?.message || posted.json?.tip || formError(posted.html, posted.flash || '认可失败')),
+    );
+  }
+  bustTopicCache(topicId);
+  bustAccountCache();
+  const fragment = commentHtmlFrom(posted.json);
+  const fromFragment = fragment ? parseComments(wrapCommentHtml(fragment), topicId)[0] : null;
+  const resultPath = (typeof posted.json?.redirect === 'string' ? posted.json.redirect : posted.url)
+    .match(/\/topic\/\d+[^#]*/)?.[0] || `/topic/${encodeURIComponent(topicId)}`;
+  const resultHtml = fromFragment
+    ? ''
+    : (posted.url.includes('/topic/') && /id="post-/.test(posted.html)
+      ? posted.html
+      : await fetchHtml(resultPath, undefined, { fresh: true }));
+  const comment = fromFragment
+    || (resultHtml ? findParsedComment(resultHtml, topicId, replyId) : undefined)
+    || parseComments(page, topicId).find((item) => item.id === replyId);
+  if (!comment) throw new MockApiError(400, 'UPSTREAM', postedMessage(posted) || '认可失败');
+  const panel = typeof posted.json?.panel_html === 'string' ? posted.json.panel_html : '';
+  const card = panel
+    ? parseRedPacketPanel(panel)
+    : parseTopicRedPacket(resultHtml || posted.html || '');
+  return {
+    comment,
+    card,
+    message: postedMessage(posted) || String(posted.json?.tip || ''),
+  };
+}
+
 export function parseComments(html: string, topicId: string): CommentDto[] {
   const onlineIds = rememberOnlineUserIds(html);
   const blocks = extractPostItems(html);
@@ -2005,6 +2205,7 @@ export function parseComments(html: string, topicId: string): CommentDto[] {
     const rewardTip = decode(first(block, /red-packet-reply-tooltip[^>]*>([\s\S]*?)<\/span>/) || '').trim()
       || decode(block.match(/red-packet-reply-reward[^>]*aria-label="([^"]*)"/)?.[1] ?? '').trim();
     const redPacket = rewardPoints > 0 || rewardTip ? { points: rewardPoints, tip: rewardTip } : null;
+    const redPacketReview = parseRedPacketReview(block);
     const deleteTag = block.match(/<[^>]*data-sb-limit-edit-time-reply-delete[^>]*>/i)?.[0] || '';
     const deleteFormTag = block.match(/<form\b[^>]*(?:sb-limit-edit-time-delete|action="\/sb_limit_edit_time_delete"|action="\/delete")[^>]*>/i)?.[0] || '';
     const deleteConfirm = decode(
@@ -2029,6 +2230,7 @@ export function parseComments(html: string, topicId: string): CommentDto[] {
       parentFloor,
       essenceLabel,
       redPacket,
+      redPacketReview,
       authorId: authorHrefId || commentUid || authorName,
       authorName,
       authorTitle: equipped.name,
@@ -2677,6 +2879,14 @@ function extractTopicEditForm(html: string): string {
   return html.match(/<form\b[^>]*method="post"[\s\S]*?name="title"[\s\S]*?<\/form>/i)?.[0] || html;
 }
 
+/**
+ * 这一页是不是发帖 / 编辑页本身（而不是保存成功后跳到的主题页）。
+ * 保存被拒时服务端把编辑页原样回吐，用它把「没存上」认出来。
+ */
+export function isTopicEditorPage(html: string): boolean {
+  return /data-slot="[^"]*topic\.form_extra[^"]*"/i.test(html) || /name="title"/i.test(html);
+}
+
 function parseSelectOptions(html: string, name: string): { value: string; label: string; selected: boolean }[] {
   const escaped = name.replace(/[[\]]/g, '\\$&');
   const select = html.match(new RegExp(`<select\\b[^>]*name="${escaped}"[^>]*>([\\s\\S]*?)</select>`, 'i'))?.[1];
@@ -2832,7 +3042,84 @@ export function parseRedPacketCompose(form: string): TopicRedPacketComposeDto | 
   };
 }
 
-function parseTopicEditor(html: string): TopicEditorDto {
+/**
+ * 已发布的特殊帖在编辑页里的只读设置段（官网 `.red-packet-compose.red-packet-readonly`）。
+ *
+ * 发帖页里这一段是可改的设置字段；帖子发出去之后官网把它改成只读：
+ * `<strong>` 是段标题、`<span>` 是当前设置概览、`<small>` 是「发布后只能编辑主题内容…」。
+ * 三段原文照抄给用户看，App 不自己编。
+ */
+function parseTopicSpecialLock(form: string): { title: string; note: string } | null {
+  const block = form.match(/<section\b[^>]*class="[^"]*\b[a-z-]+-compose\b[^"]*\b[a-z-]+-readonly\b[^"]*"[^>]*>[\s\S]*?<\/section>/i)?.[0];
+  if (!block) return null;
+  const title = first(block, /<strong\b[^>]*>([\s\S]*?)<\/strong>/) ?? '';
+  const note = [
+    first(block, /<span\b[^>]*>([\s\S]*?)<\/span>/),
+    first(block, /<small\b[^>]*>([\s\S]*?)<\/small>/),
+  ].map((part) => (part ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+  return title || note ? { title, note } : null;
+}
+
+/**
+ * 编辑页的「编辑主帖」计费段（`.sb-limit-edit-time-quote`）：
+ *
+ *   <section class="sb-limit-edit-time-quote"><strong>编辑主帖</strong>
+ *     <span>本次免费；免费期 30 天，之后 5 积分起…</span>
+ *     <input hidden name="sb_limit_edit_time_operation_key" value="…">
+ *     <input hidden name="sb_limit_edit_time_quoted_cost" value="0">
+ *     <span hidden data-sb-limit-edit-time-edit-confirm="本次编辑免费。计费公式…" data-rules-url="/sb_limit_edit_time_rules"></span>
+ *   </section>
+ *
+ * 官网的 plugins.js 把最后一个属性的文案接到「是否确认保存？」上，**每次保存都弹一次**确认框，
+ * 有 `data-rules-url` 时还给一个「查看详细积分规则 →」入口。两个 hidden 字段本身原样回传。
+ */
+function parseTopicEditorCost(form: string): TopicEditorDto['editCost'] {
+  const block = extractClassBlock(form, 'sb-limit-edit-time-quote');
+  if (!block) return null;
+  const fields = parseFormFields(block);
+  const marker = block.match(/<span\b[^>]*data-sb-limit-edit-time-edit-confirm[^>]*>/i)?.[0] || '';
+  return {
+    title: decode(stripTags(first(block, /<strong\b[^>]*>([\s\S]*?)<\/strong>/) || '')).trim(),
+    note: decode(stripTags(first(block, /<span\b[^>]*>([\s\S]*?)<\/span>/) || '')).trim(),
+    cost: Number(fields.sb_limit_edit_time_quoted_cost ?? 0) || 0,
+    confirm: decode(formAttr(marker, 'data-sb-limit-edit-time-edit-confirm') ?? '').trim(),
+    rulesUrl: decode(formAttr(marker, 'data-rules-url') ?? '').trim(),
+  };
+}
+
+/** 编辑页内联的「删除主帖」段（`.sb-limit-edit-time-inline-delete`）：一段影响说明 + 带 `data-confirm` 的按钮。 */
+function parseTopicEditorDeleteLock(form: string): TopicEditorDto['deleteLock'] {
+  const block = extractClassBlock(form, 'sb-limit-edit-time-inline-delete');
+  if (!block) return null;
+  const button = block.match(/<button\b[^>]*>/i)?.[0] || '';
+  const confirm = decode(formAttr(button, 'data-confirm') ?? '').trim();
+  const note = decode(stripTags(first(block, /<span\b[^>]*>([\s\S]*?)<\/span>/) || '')).trim();
+  return confirm || note
+    ? { note, confirm, rulesUrl: decode(formAttr(button, 'data-sb-limit-edit-time-rules-url') ?? '').trim() }
+    : null;
+}
+
+/**
+ * 附件上传（`.attachment-uploader`）：发帖页、编辑页、回帖框是同一套。
+ * 类型与大小限制由站点后台配置，页面写在 `data-upload-max-mb` / `input[accept]` 上。
+ */
+export function parseAttachmentUploader(html: string): TopicAttachmentUploaderDto | null {
+  const block = extractClassBlock(html, 'attachment-uploader');
+  if (!block) return null;
+  const opening = block.match(/^<div\b[^>]*>/i)?.[0] || '';
+  const url = decode(formAttr(opening, 'data-upload-url') ?? '').trim();
+  if (!url) return null;
+  const input = block.match(/<input\b[^>]*data-attachment-input[^>]*>/i)?.[0] || '';
+  return {
+    url,
+    maxMb: Number(formAttr(opening, 'data-upload-max-mb') ?? 0) || 0,
+    accept: decode(formAttr(input, 'accept') ?? '').trim(),
+    multiple: /\bmultiple\b/i.test(input),
+    label: decode(stripTags(first(block, /<strong\b[^>]*>([\s\S]*?)<\/strong>/) || '')).trim(),
+  };
+}
+
+export function parseTopicEditor(html: string): TopicEditorDto {
   rememberUploadPermissionFrom(html);
   const form = extractTopicEditForm(html);
   const fields = parseFormFields(form);
@@ -2847,10 +3134,14 @@ function parseTopicEditor(html: string): TopicEditorDto {
   const selectedForum = forumOptions.find((item) => item.selected);
   const forumId = fields.forum_id || selectedForum?.value || forums[0]?.id || '';
   const forumName = forums.find((item) => item.id === forumId)?.name || selectedForum?.label || '';
-  const specialRaw = parseCheckedRadio(form, 'topic_special_type');
+  // 发帖页的类型是 radio 组（都不勾＝普通帖）；已发布的特殊帖在编辑页变成 hidden，值就是原类型。
+  // 只认勾选的 radio 会把红包帖的编辑页当成普通帖，保存时再把类型覆盖成空 —— 见 npm run check:redpacket。
+  const specialRaw = parseCheckedRadio(form, 'topic_special_type') || fields.topic_special_type || '';
   const specialType: TopicSpecialType = specialRaw === 'lottery' || specialRaw === 'virtual_card' || specialRaw === 'red_packet'
     ? specialRaw
     : '';
+  // 回帖排序只在编辑页有（发帖页不渲染这个 select，新帖用官网默认的「发帖时间顺序」）。
+  const replyRows = parseSelectOptions(form, 'reply_order');
   return {
     title: title.trim(),
     body,
@@ -2858,6 +3149,19 @@ function parseTopicEditor(html: string): TopicEditorDto {
     forumId,
     forums,
     specialType,
+    specialLock: parseTopicSpecialLock(form),
+    replyOrder: replyRows.length
+      ? {
+        label: decode(stripTags(
+          form.match(/<label\b[^>]*>\s*<span>([\s\S]*?)<\/span>\s*<select\b[^>]*name="reply_order"/i)?.[1] ?? '',
+        )).trim(),
+        value: replyRows.find((row) => row.selected)?.value ?? replyRows[0].value,
+        options: replyRows.map((row) => ({ value: row.value, label: row.label })),
+      }
+      : null,
+    editCost: parseTopicEditorCost(form),
+    attachment: parseAttachmentUploader(html),
+    deleteLock: parseTopicEditorDeleteLock(form),
     lottery: parseLotteryCompose(form),
     virtualCard: parseVirtualCardCompose(form),
     redPacket: parseRedPacketCompose(form),
@@ -3003,6 +3307,8 @@ async function submitTopicEdit(editorHtml: string, input: TopicComposeInput, id:
     forum_id: forumId,
     title,
     body,
+    // 回帖排序由用户在编辑页选（页面上的 select 值就是默认值，只在用户改过时才覆盖）
+    ...(input.replyOrder === undefined ? {} : { reply_order: input.replyOrder }),
     ...topicSpecialPostFields({
       ...input,
       lottery: input.lottery
@@ -3016,6 +3322,14 @@ async function submitTopicEdit(editorHtml: string, input: TopicComposeInput, id:
   if (isLoginWall(posted.html) || (posted.json && posted.json.ok === false)) {
     throw new MockApiError(400, 'UPSTREAM', formError(posted.html, String(posted.json?.message || (id === '0' ? '发帖失败' : '保存失败'))));
   }
+  /**
+   * 保存被拒时官网会原样回吐编辑页（HTTP 200、没跳转、也没有 json），错误走 `__form_error`。
+   * 必须在这里拦下：下面 savedId 的兜底是 id，会把「根本没存上」当成成功，
+   * 用户看到「主题已保存」但正文一字未改（红包帖曾因类型字段被解析成空而必现）。
+   */
+  if (isTopicEditorPage(posted.html)) {
+    throw new MockApiError(400, 'UPSTREAM', formError(posted.html, id === '0' ? '发帖失败' : '保存失败'));
+  }
   const savedId = posted.url.match(/\/topic\/(\d+)/)?.[1]
     || posted.html.match(/href="\/topic\/(\d+)"/)?.[1]
     || (id !== '0' ? id : '');
@@ -3028,7 +3342,16 @@ async function submitTopicEdit(editorHtml: string, input: TopicComposeInput, id:
   return parseTopicDetail(html, savedId);
 }
 
-function parseTopicDelete(html: string, topicId: string): { path: string; fields: Record<string, string> } | null {
+function parseTopicDelete(
+  html: string,
+  topicId: string,
+): { path: string; fields: Record<string, string>; confirm: string; rulesUrl: string } | null {
+  const deletion = (form: string, path: string, fields: Record<string, string>) => ({
+    path,
+    fields,
+    confirm: decode(formAttr(form.match(/^<form\b[^>]*>/i)?.[0] || '', 'data-confirm') ?? '').trim(),
+    rulesUrl: decode(formAttr(form.match(/^<form\b[^>]*>/i)?.[0] || '', 'data-sb-limit-edit-time-rules-url') ?? '').trim(),
+  });
   const forms = html.match(/<form\b[\s\S]*?<\/form>/gi) ?? [];
   for (const form of forms) {
     if (/reply_id|删除回帖|content_type"[^>]*value="reply"|value="reply"/.test(form) && !/删除主帖|删除主题/.test(form)) continue;
@@ -3038,11 +3361,16 @@ function parseTopicDelete(html: string, topicId: string): { path: string; fields
     const fields = parseFormFields(form);
     if (!fields.topic_id) fields.topic_id = topicId;
     if (!fields.id) fields.id = topicId;
-    return { path: formActionPath(form, '/topic_edit'), fields };
+    return deletion(form, formActionPath(form, '/topic_edit'), fields);
   }
   const href = html.match(/href="(\/topic_delete[^"]*)"/)?.[1];
   if (href) {
-    return { path: href.replace(/&amp;/g, '&'), fields: { id: topicId, topic_id: topicId } };
+    return {
+      path: href.replace(/&amp;/g, '&'),
+      fields: { id: topicId, topic_id: topicId },
+      confirm: '',
+      rulesUrl: '',
+    };
   }
   const marker = html.match(/<[^>]*data-sb-limit-edit-time-[^>]*topic-delete[^>]*>/i)?.[0]
     || html.match(/<[^>]*data-sb-limit-edit-time[^>]*data-url="[^"]+"[^>]*>/i)?.[0];
@@ -3051,6 +3379,8 @@ function parseTopicDelete(html: string, topicId: string): { path: string; fields
     if (url) {
       return {
         path: url.replace(/^https?:\/\/(?:www\.)?linux\.sb/i, ''),
+        confirm: decode(formAttr(marker, 'data-confirm') ?? '').trim(),
+        rulesUrl: decode(formAttr(marker, 'data-sb-limit-edit-time-rules-url') ?? '').trim(),
         fields: {
           content_type: 'topic',
           content_id: marker.match(/data-content-id="([^"]+)"/i)?.[1] || topicId,
@@ -3399,28 +3729,38 @@ function emptySearchResult(partial: Partial<SearchResultDto> = {}): SearchResult
     topics: [],
     users: [],
     forums: [],
+    free: false,
+    access: '',
     ...partial,
   };
 }
 
-function parseSearchPage(html: string, q: string, scope: string, sort: string, page: number): SearchResultDto {
+export function parseSearchPage(html: string, q: string, scope: string, sort: string, page: number): SearchResultDto {
   const hits = parseSearchHits(html);
   const users = parseSearchUsers(html);
   const summary = stripTags(first(html, /meilisearch-search-summary">([\s\S]*?)<\/div>/) || '');
-  const costNote = stripTags(first(html, /meilisearch-search-cost-note">([\s\S]*?)<\/p>/) || '');
+  const costNoteTag = html.match(/<p[^>]*meilisearch-search-cost-note[^>]*>[\s\S]*?<\/p>/)?.[0] || '';
+  const free = /\bis-free\b/.test(costNoteTag);
+  const costNote = stripTags(costNoteTag);
   const emptyHint = stripTags(
     first(html, /meilisearch-search-empty[^>]*>([\s\S]*?)<\//)
     || (!q ? '输入关键词，搜索社区中的主题和回帖。' : ''),
   );
   const total = Number(summary.match(/(\d[\d,]*)\s*个(?:主题|用户)/)?.[1]?.replace(/,/g, '') ?? (hits.length || users.length));
+  const listCost = Number(html.match(/data-search-cost="(\d+)"/)?.[1] ?? 1);
+  const access = decode(
+    html.match(/name="access"[^>]*value="([^"]*)"/)?.[1]
+    || html.match(/[?&]access=([0-9a-f.]+)/i)?.[1]
+    || '',
+  );
   return emptySearchResult({
     q,
     scope: decode(html.match(/name="scope"[^>]*value="([^"]*)"/)?.[1] || scope),
     sort,
     summary,
-    cost: Number(html.match(/data-search-cost="(\d+)"/)?.[1] ?? 1),
+    cost: free ? 0 : listCost,
     balance: Number(html.match(/data-search-balance="(\d+)"/)?.[1] ?? parseAccountPoints(html, 0)),
-    costNote: costNote || emptySearchResult().costNote,
+    costNote: costNote || (free ? '搜索免积分' : emptySearchResult().costNote),
     placeholder: decode(html.match(/name="q"[^>]*placeholder="([^"]*)"/)?.[1] ?? (scope === 'user' ? '搜索用户名' : '搜索标题、主题内容和回帖')),
     emptyHint: emptyHint || (scope === 'user' ? '输入用户名搜索' : '输入关键词，搜索社区中的主题和回帖。'),
     total,
@@ -3429,6 +3769,8 @@ function parseSearchPage(html: string, q: string, scope: string, sort: string, p
     hits,
     topics: hits.map(searchHitToTopic),
     users,
+    free,
+    access,
   });
 }
 
@@ -3897,7 +4239,11 @@ function urlFromUploadJson(json: Record<string, unknown> | null): string {
   return hit ? absUrl(hit[1]) : '';
 }
 
-async function uploadOfficialAttachment(file: { uri: string; name: string; type: string }): Promise<string> {
+/**
+ * 官网附件通道（`/attachment_upload`，`.attachment-uploader` 用的就是它）。
+ * 回 `{url, markdown}`：`markdown` 是官网「批量插入」时写进正文的原文，图片上传也复用它。
+ */
+async function uploadOfficialAttachment(file: { uri: string; name: string; type: string }): Promise<{ url: string; markdown: string }> {
   const page = await fetchHtml('/topic_edit', undefined, { fresh: true });
   if (isLoginWall(page)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录后上传');
   const body = new FormData();
@@ -3910,15 +4256,16 @@ async function uploadOfficialAttachment(file: { uri: string; name: string; type:
     headers: {
       'X-Requested-With': 'XMLHttpRequest',
       Accept: 'application/json, text/html;q=0.9',
-      Referer: `${LINUX_ORIGIN}/topic_edit`,
+      Referer: `${liveBase()}/topic_edit`,
     },
   });
   if (jsonRejected(posted.json) || posted.status >= 400) {
     throw new MockApiError(400, 'UPSTREAM', postedMessage(posted) || '上传失败');
   }
   const url = urlFromUploadJson(posted.json);
-  if (!url) throw new MockApiError(400, 'UPSTREAM', '上传成功但未返回图片地址');
-  return url;
+  if (!url) throw new MockApiError(400, 'UPSTREAM', '上传成功但未返回地址');
+  const raw = String(posted.json?.markdown ?? '').trim();
+  return { url, markdown: raw || url };
 }
 
 async function uploadPostImage(file: {
@@ -3940,8 +4287,8 @@ async function uploadPostImage(file: {
   const want = file.target === 'r2' || file.target === 'official' ? file.target : null;
 
   const toOfficial = async () => {
-    const url = await uploadOfficialAttachment(packed);
-    return { id: url, url, expiresAt: '' };
+    const attachment = await uploadOfficialAttachment(packed);
+    return { id: attachment.url, url: attachment.url, expiresAt: '' };
   };
   const toR2 = async () => {
     const config = await loadR2Config();
@@ -4088,10 +4435,29 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       coined: parsed?.coined ?? false,
       likeTiers: parsed?.likeTiers,
       redPacket: parsed?.redPacket ?? null,
+      redPacketReview: parsed?.redPacketReview ?? null,
       floor: parsed?.floor ?? null,
       canEdit: parsed?.canEdit ?? true,
       canDelete: parsed?.canDelete ?? true,
     };
+  }
+
+  /**
+   * 楼主认可红包回复：官网楼层上的 `POST /red_packet_review`
+   * （hidden topic_id / reply_id / decision，按钮原文「楼主认可」）。
+   */
+  const topicRedPacketReview = match(path, /^\/topics\/([^/]+)\/comments\/([^/]+)\/red-packet-review$/);
+  if (topicRedPacketReview && method === 'POST') {
+    return submitRedPacketReview(topicRedPacketReview[0], topicRedPacketReview[1], String(payload.decision ?? ''));
+  }
+
+  /**
+   * 追加红包：官网红包卡片里的 `.red-packet-topup-form`（`POST /red_packet_topup`）。
+   * 只有楼主有这个表单，且必须带上页面给的 `expected_*`。
+   */
+  const topicRedPacketTopup = match(path, /^\/topics\/([^/]+)\/red-packet-topup$/);
+  if (topicRedPacketTopup && method === 'POST') {
+    return submitRedPacketTopup(topicRedPacketTopup[0], String(payload.count ?? ''), String(payload.amount ?? ''));
   }
 
   /**
@@ -4133,20 +4499,35 @@ async function dispatch(req: MockRequest): Promise<unknown> {
     const [topicId, replyId] = topicCommentItem;
     const body = String(payload.body ?? '').trim();
     if (!body) throw new MockApiError(400, 'VALIDATION', '请输入回复内容');
-    const editorHtml = await loadReplyEditPage(replyId);
-    const editor = parseReplyEditor(editorHtml, replyId, topicId);
-    if (!editor) throw new MockApiError(400, 'UPSTREAM', '当前回帖不能编辑');
-    const fields = { ...editor.fields };
-    dropReplyDeleteFields(fields);
-    const savePath = replyEditPostPath(editor.action, replyId);
-    const posted = await postAjaxForm(savePath, {
-      ...fields,
-      _csrf: fields._csrf || csrfFrom(editorHtml),
-      id: fields.id || replyId,
-      topic_id: fields.topic_id || topicId,
-      body: stripLimitEditTimeComment(body),
-    }, savePath);
-    if (posted.status >= 400 || isLoginWall(posted.html) || !posted.json || jsonRejected(posted.json) || !posted.json.ok) {
+    const saveOnce = async () => {
+      const editorHtml = await loadReplyEditPage(replyId);
+      const editor = parseReplyEditor(editorHtml, replyId, topicId);
+      if (!editor) throw new MockApiError(400, 'UPSTREAM', '当前回帖不能编辑');
+      const fields = { ...editor.fields };
+      dropReplyDeleteFields(fields);
+      const savePath = replyEditPostPath(editor.action, replyId);
+      /**
+       * 跟发回帖、编主题一样走 urlencoded。这里原先用 FormData，经 QUIC/Cronet 时
+       * Content-Type 容易丢成 octet-stream，官网读不到 `_csrf` 就回「请求已过期」。
+       */
+      return postForm(savePath, {
+        ...fields,
+        _csrf: fields._csrf || csrfFrom(editorHtml),
+        id: fields.id || replyId,
+        topic_id: fields.topic_id || topicId,
+        body: stripLimitEditTimeComment(body),
+      });
+    };
+    const saveRejected = (posted: LinuxResult) => (
+      posted.status >= 400
+      || isLoginWall(posted.html)
+      || jsonRejected(posted.json)
+      || posted.json?.ok === false
+    );
+    let posted = await saveOnce();
+    const saveMessage = String(posted.json?.message || formError(posted.html, posted.flash || '保存失败'));
+    if (saveRejected(posted) && /已过期/.test(saveMessage)) posted = await saveOnce();
+    if (saveRejected(posted)) {
       throw new MockApiError(
         posted.status >= 400 ? posted.status : 400,
         'UPSTREAM',
@@ -4247,6 +4628,8 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       fetchBarrage(id),
     ]);
     requireTopicPage(html);
+    // 删除主帖的确认文案写在表单的 data-confirm 上（含免费/计费期限与「删除后不可自行恢复」）
+    const deleteForm = parseTopicDelete(html, id);
     return {
       topic: parseTopicDetail(html, id),
       permissions: topicPermissions(html),
@@ -4258,6 +4641,10 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       lottery: parseTopicLottery(html),
       virtualCard: parseTopicVirtualCard(html),
       redPacket: parseTopicRedPacket(html),
+      redPacketTopup: parseTopicRedPacketTopup(html),
+      deleteLock: deleteForm && (deleteForm.confirm || deleteForm.rulesUrl)
+        ? { note: '', confirm: deleteForm.confirm, rulesUrl: deleteForm.rulesUrl }
+        : null,
       collections: parseTopicCollectionForm(html)?.items ?? [],
     };
   }
@@ -5193,7 +5580,7 @@ async function dispatch(req: MockRequest): Promise<unknown> {
         _csrf: csrfFrom(formPage),
         q,
         scope,
-        charge_confirmed: '1',
+        charge_confirmed: payload.free === true || payload.free === '1' ? '0' : '1',
       }, false);
       if (isLoginWall(posted.html)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录后搜索');
       if (jsonRejected(posted.json) || posted.status >= 400) {
@@ -5212,6 +5599,8 @@ async function dispatch(req: MockRequest): Promise<unknown> {
     if (scope && scope !== 'all') params.set('scope', scope);
     if (sort && sort !== 'relevance') params.set('sort', sort);
     if (page > 1) params.set('p', String(page));
+    const access = String(payload.access ?? query.access ?? '').trim();
+    if (access) params.set('access', access);
     const html = await fetchHtml(`/search?${params.toString()}`);
     return parseSearchPage(html, q, scope, sort, page);
   }
@@ -5328,7 +5717,7 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       headers: {
         'X-Requested-With': 'XMLHttpRequest',
         Accept: 'application/json, text/html;q=0.9',
-        Referer: `${LINUX_ORIGIN}/profile`,
+        Referer: `${liveBase()}/profile`,
       },
     });
     if (jsonRejected(posted.json) || posted.status >= 400) {
@@ -5354,6 +5743,24 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       type: String(payload.type ?? 'image/jpeg'),
       target: String(payload.target ?? ''),
     });
+  }
+
+  /**
+   * 附件上传：官网 `.attachment-uploader` 用的就是 `/attachment_upload`。
+   * 服务端按站点后台配置校验类型与大小，这里只回 `{url, markdown}`，
+   * 前台把 markdown 插进正文（相当于官网的「批量插入」）。
+   */
+  if (path === '/uploads/attachment' && method === 'POST') {
+    requireCookie();
+    const uri = String(payload.uri ?? '').trim();
+    if (!uri) throw new MockApiError(400, 'VALIDATION', '请选择要上传的文件');
+    const name = String(payload.name ?? '').trim() || 'file';
+    const attachment = await uploadOfficialAttachment({
+      uri,
+      name,
+      type: String(payload.type ?? '').trim() || 'application/octet-stream',
+    });
+    return { ...attachment, name };
   }
 
   throw new MockApiError(404, 'NOT_FOUND', '接口不存在');

@@ -23,6 +23,7 @@ import type {
   TopicCollectionPickDto,
   TopicLotteryDto,
   TopicRedPacketDto,
+  TopicRedPacketTopupDto,
   TopicVirtualCardDto,
 } from '../types/api';
 import { api, mapTopic, mapUser } from '../services/api';
@@ -68,14 +69,54 @@ import {
   type DialogState,
   type SheetItem,
 } from '../components/ui';
+import { OutlineButton } from '../components/account/AccountUi';
 import { commentsEmptyKind } from '../utils/comments-empty';
+import {
+  commentsPageMatches,
+  shouldChaseLatestPage,
+  topicJumpPage,
+  type CommentJumpFollow,
+} from '../utils/comment-jump';
 import { collectArticleImages, hasLockedReplyVisible, uniqueImages } from '../utils/article';
 import { classifyAppHref } from '../utils/links';
 import { copyText, shareText } from '../utils/share';
 import { formatRelative } from '../utils/time';
 import { markTopicSeen } from '../utils/topic-seen';
+import {
+  clearCommentDraft,
+  clearCommentDraftVisit,
+  commentDraftVisitIsRecent,
+  markCommentDraftVisit,
+  preloadCommentDraft,
+  saveCommentDraft,
+  type CommentDraft,
+} from '../utils/draft';
 
 export const TOPIC_SHARE = (id: string) => `https://linux.sb/topic/${id}`;
+
+function draftReplyTo(saved: CommentDraft): CommentDto | null {
+  if (!saved.replyToId || !saved.replyToName) return null;
+  return {
+    id: saved.replyToId,
+    topicId: saved.topicId,
+    parentId: null,
+    parentFloor: null,
+    authorId: '',
+    authorName: saved.replyToName,
+    authorTitle: '',
+    uid: '',
+    avatar: '?',
+    accent: C.blue,
+    body: '',
+    mention: null,
+    createdAt: '',
+    likeCount: 0,
+    liked: false,
+    floor: saved.replyToFloor || null,
+    canEdit: false,
+    canDelete: false,
+  };
+}
 
 function shortAgo(iso: string) {
   return formatRelative(iso).replace(/前$/, '');
@@ -545,11 +586,16 @@ export function ReplyReactSheet({
 /**
  * 红包帖的卡片（官网 `.red-packet-card`）。
  *
- * 官网的领取方式是「回帖」：卡片里的「回帖要求」写明触发行为与最低字数，
- * 合格回复后由服务端随机/按序发一份积分。App 只负责把状态显示清楚，
- * 并把「回帖就能领」这件事讲明白 —— 不自己造一个「抢红包」按钮（官方没有）。
+ * 现行官网领取规则是「楼主认可」：回复先待审，楼主点「楼主认可」后才发积分。
+ * 卡片文案全部取自页面。App 不自己造「抢红包」按钮。
  */
-export function TopicRedPacketCard({ redPacket }: { redPacket: TopicRedPacketDto }) {
+export function TopicRedPacketCard({
+  redPacket,
+  children,
+}: {
+  redPacket: TopicRedPacketDto;
+  children?: React.ReactNode;
+}) {
   const tone = redPacket.state === 'open' ? 'danger' : 'default';
   return (
     <View style={styles.widgetCard}>
@@ -572,6 +618,83 @@ export function TopicRedPacketCard({ redPacket }: { redPacket: TopicRedPacketDto
         </View>
       ) : null}
       {redPacket.rule ? <Text style={styles.widgetMeta}>{redPacket.rule}</Text> : null}
+      {children}
+    </View>
+  );
+}
+
+/**
+ * 红包卡片里的「追加红包」（官网 `.red-packet-topup`，只有楼主看得到）。
+ *
+ * 官网是普通表单：`POST /red_packet_topup` + hidden `expected_*`（乐观锁），
+ * 提交的份数/积分要落在页面给的 min/max 里（这两个值随剩余份数变化，不能写死）。
+ * 积分花出去不可撤销，所以这里用 ConfirmDialog 再过一道。
+ */
+export function TopicRedPacketTopupForm({
+  topup,
+  busy,
+  onSubmit,
+}: {
+  topup: TopicRedPacketTopupDto;
+  busy: boolean;
+  onSubmit: (count: string, amount: string) => void;
+}) {
+  const [count, setCount] = useState(topup.count);
+  const [amount, setAmount] = useState(topup.amount);
+  const [confirming, setConfirming] = useState(false);
+  // 追加成功、或期间红包被领走，页面给的默认值与限值都会变，输入框跟着回到页面的值。
+  const stamp = String(topup.fields.expected_remaining_count ?? '');
+  useEffect(() => {
+    setCount(topup.count);
+    setAmount(topup.amount);
+  }, [stamp, topup.count, topup.amount]);
+  return (
+    <View style={styles.widgetCardInner}>
+      <Text style={styles.widgetSection}>{topup.title}</Text>
+      {topup.note ? <Text style={styles.widgetMeta}>{topup.note}</Text> : null}
+      <View style={styles.composeField}>
+        <Text style={styles.composeFieldLabel}>
+          {`${topup.countLabel || '追加份数'}（${topup.countMin}-${topup.countMax}）`}
+        </Text>
+        <TextInput
+          value={count}
+          onChangeText={setCount}
+          keyboardType="number-pad"
+          placeholderTextColor={C.dim}
+          style={styles.composeInput}
+        />
+      </View>
+      <View style={styles.composeField}>
+        <Text style={styles.composeFieldLabel}>
+          {`${topup.amountLabel || '追加总积分'}（${topup.amountMin}-${topup.amountMax}）`}
+        </Text>
+        <TextInput
+          value={amount}
+          onChangeText={setAmount}
+          keyboardType="number-pad"
+          placeholderTextColor={C.dim}
+          style={styles.composeInput}
+        />
+      </View>
+      {topup.hint ? <Text style={styles.composeFieldHint}>{topup.hint}</Text> : null}
+      <PrimaryButton
+        compact
+        disabled={busy}
+        label={busy ? '提交中' : topup.title}
+        onPress={() => setConfirming(true)}
+      />
+      <ConfirmDialog
+        dialog={confirming ? {
+          title: topup.title,
+          text: `追加 ${count || topup.count} 份、共 ${amount || topup.amount} 积分。${topup.note}`,
+          confirmLabel: topup.title,
+          onConfirm: () => {
+            setConfirming(false);
+            onSubmit(count, amount);
+          },
+        } : null}
+        onClose={() => setConfirming(false)}
+      />
     </View>
   );
 }
@@ -916,12 +1039,7 @@ export function EssenceVoteCard({
   );
 }
 
-export function topicJumpPage(topic: Topic, latest?: boolean) {
-  if (!latest) return 1;
-  if (topic.unreadPage && topic.unreadPage > 0) return topic.unreadPage;
-  if (topic.unreadFloor) return 1;
-  return Math.max(1, topic.lastPage ?? 1);
-}
+export { topicJumpPage } from '../utils/comment-jump';
 
 export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyId, floor }: { topic: Topic; onBack: () => void; latest?: boolean; editedComment?: CommentDto; replyId?: string; floor?: string }) {
   const nav = useNav();
@@ -935,6 +1053,10 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
   const [seekReplyId, setSeekReplyId] = useState<string | undefined>(replyId);
   const [seekFloor, setSeekFloor] = useState<string | undefined>(floor);
   const [commentPage, setCommentPage] = useState(() => (replyId || floor ? 0 : topicJumpPage(topic, latest)));
+  const [jumpFollow, setJumpFollow] = useState<CommentJumpFollow>('auto');
+  const jumpFollowRef = useRef<CommentJumpFollow>('auto');
+  jumpFollowRef.current = jumpFollow;
+  const seenCommentFetchRef = useRef(false);
   const commentsQuery = useAsync(
     () => (
       commentPage === 0 && seekReplyId
@@ -961,25 +1083,45 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     setEssenceEditing(false);
     setSeekReplyId(replyId);
     setSeekFloor(floor);
+    setJumpFollow('auto');
+    jumpFollowRef.current = 'auto';
+    seenCommentFetchRef.current = false;
     setCommentPage(replyId || floor ? 0 : topicJumpPage(topic, latest));
-  }, [topic.id, latest, replyId, floor, topic.unreadPage, topic.unreadFloor, topic.lastPage]);
+  }, [topic.id, latest, replyId, floor]);
+  useEffect(() => {
+    seenCommentFetchRef.current = false;
+  }, [topic.id, commentPage, seekReplyId, seekFloor]);
   useEffect(() => {
     if (detail.error && !detail.data) return;
     const replies = detail.data?.topic.replyCount ?? topic.replies;
     markTopicSeen(topic.id, replies);
   }, [topic.id, detail.data?.topic.replyCount, topic.replies, detail.error, detail.data]);
   useEffect(() => {
-    if (!latest || replyId || seekReplyId || floor || seekFloor) return;
-    if (topic.unreadPage || topic.unreadFloor) return;
+    if (commentsQuery.fetching) seenCommentFetchRef.current = true;
+    if (!seenCommentFetchRef.current || commentsQuery.loading || commentsQuery.fetching) return;
     const last = Math.max(
       commentsQuery.data?.lastPage ?? 1,
       detail.data?.topic.lastPage ?? 1,
       topic.lastPage ?? 1,
     );
-    if (last > commentPage && commentPage > 0) setCommentPage(last);
-  }, [latest, replyId, seekReplyId, floor, seekFloor, topic.unreadPage, topic.unreadFloor, commentsQuery.data?.lastPage, detail.data?.topic.lastPage, topic.lastPage, commentPage]);
+    if (!shouldChaseLatestPage({
+      follow: jumpFollow,
+      latest,
+      replyLocked: Boolean(replyId || seekReplyId || floor || seekFloor),
+      unreadPage: topic.unreadPage,
+      unreadFloor: topic.unreadFloor,
+      commentPage,
+      lastPage: last,
+    })) return;
+    setCommentPage(last);
+  }, [jumpFollow, latest, replyId, seekReplyId, floor, seekFloor, topic.unreadPage, topic.unreadFloor, commentsQuery.data?.lastPage, commentsQuery.loading, commentsQuery.fetching, detail.data?.topic.lastPage, topic.lastPage, commentPage]);
   const [replyTo, setReplyTo] = useState<CommentDto | null>(null);
   const [comment, setComment] = useState('');
+  const [draftPrompt, setDraftPrompt] = useState<SheetItem[] | null>(null);
+  const [draftPromptTitle, setDraftPromptTitle] = useState('回帖草稿');
+  const leavingRef = useRef(false);
+  const pendingDraftRef = useRef<CommentDraft | null>(null);
+  const draftKindRef = useRef<'enter' | 'leave' | null>(null);
   /**
    * 底部回复框直接用与「编辑回帖」同一套编辑器（useNbEditor）：
    * 工具条、表情库、图片上传、所见即所得、全屏全部一致 —— 全屏后就是完整的回帖编辑器。
@@ -1027,14 +1169,56 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
   const [highlightId, setHighlightId] = useState<string | null>(replyId ?? null);
   useEffect(() => {
     setJustPostedId(null);
-    setReplyTo(null);
-    setComment('');
     setHighlightId(replyId ?? null);
   }, [topic.id, replyId]);
+  useEffect(() => {
+    let alive = true;
+    leavingRef.current = false;
+    setReplyTo(null);
+    setComment('');
+    setDraftPrompt(null);
+    pendingDraftRef.current = null;
+    void preloadCommentDraft(topic.id).then((saved) => {
+      if (!alive || !saved?.body.trim()) return;
+      if (commentDraftVisitIsRecent(topic.id)) {
+        setComment(saved.body);
+        const reply = draftReplyTo(saved);
+        if (reply) setReplyTo(reply);
+        return;
+      }
+      pendingDraftRef.current = saved;
+      draftKindRef.current = 'enter';
+      setDraftPromptTitle('发现回帖草稿');
+      setDraftPrompt([
+        {
+          label: '继续编辑草稿',
+          onPress: () => {
+            pendingDraftRef.current = null;
+            setComment(saved.body);
+            const reply = draftReplyTo(saved);
+            if (reply) setReplyTo(reply);
+          },
+        },
+        {
+          label: '放弃草稿',
+          danger: true,
+          onPress: () => {
+            pendingDraftRef.current = null;
+            clearCommentDraft(topic.id);
+          },
+        },
+      ]);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [topic.id]);
   const [reactTarget, setReactTarget] = useState<CommentDto | null>(null);
   const [reactBusy, setReactBusy] = useState(false);
   const [expandedThreads, setExpandedThreads] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState<string | null>(null);
+  const [topupBusy, setTopupBusy] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [donateOpen, setDonateOpen] = useState(false);
   const [donateBusy, setDonateBusy] = useState(false);
@@ -1050,11 +1234,11 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
    * 解出来一次用完就作废（capNonce 让组件重新挂载拿新题）。
    */
   const [capToken, setCapToken] = useState<string | null>(null);
-  // 红包帖：卡片里的「回帖要求」那格就是领取门槛（例如「不少于 30 个字」）
+  // 红包帖回帖框提示：门槛写在卡片格子/规则里（现行是「楼主认可」，旧帖才是字数）。
   const redPacket = detail.data?.redPacket ?? null;
   const topicHasRedPacket = Boolean(redPacket);
-  const redPacketNeed = redPacket && redPacket.state === 'open'
-    ? redPacket.cells.find((cell) => /回帖|回复/.test(cell.label)) ?? null
+  const redPacketHint = redPacket && redPacket.state === 'open'
+    ? (redPacket.cells.find((cell) => /认可|回帖|回复/.test(cell.label)) ?? redPacket.cells[2] ?? null)
     : null;
   const [capNonce, setCapNonce] = useState(0);
   const replyCaptcha = detail.data?.replyCaptcha === true;
@@ -1081,6 +1265,32 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
   const commentNodeRefs = useRef(new Map<string, View>());
   const replyToRef = useRef<CommentDto | null>(null);
   replyToRef.current = replyTo;
+  const commentRef = useRef(comment);
+  commentRef.current = comment;
+  useEffect(() => {
+    if (!comment.trim()) return;
+    saveCommentDraft({
+      topicId: topic.id,
+      body: comment,
+      replyToId: replyTo?.id,
+      replyToName: replyTo?.authorName,
+      replyToFloor: replyTo?.floor ?? undefined,
+    });
+  }, [comment, replyTo, topic.id]);
+  useEffect(() => () => {
+    if (leavingRef.current) return;
+    markCommentDraftVisit(topic.id);
+    const body = commentRef.current.trim();
+    if (!body) return;
+    const reply = replyToRef.current;
+    saveCommentDraft({
+      topicId: topic.id,
+      body,
+      replyToId: reply?.id,
+      replyToName: reply?.authorName,
+      replyToFloor: reply?.floor ?? undefined,
+    });
+  }, [topic.id]);
   const essenceEditingRef = useRef(false);
   essenceEditingRef.current = essenceEditing;
   const pinVoteToKeyboard = useCallback(() => {
@@ -1185,16 +1395,62 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
       timers.forEach(clearTimeout);
     };
   }, [justPostedId, kbLift, locateJustPosted]);
-  useAndroidBack(commentEditor.emojiOpen || composerTools || Boolean(replyTo) || donateOpen || Boolean(reactTarget) || Boolean(commentMenu), () => {
+  const leaveTopicNow = () => {
+    leavingRef.current = true;
+    clearCommentDraftVisit(topic.id);
+    onBack();
+  };
+  const leaveTopic = () => {
+    const pending = pendingDraftRef.current;
+    const body = commentRef.current.trim() || pending?.body.trim() || '';
+    if (!body) {
+      clearCommentDraft(topic.id);
+      leaveTopicNow();
+      return;
+    }
+    draftKindRef.current = 'leave';
+    pendingDraftRef.current = null;
+    setDraftPromptTitle('退出主题');
+    setDraftPrompt([
+      {
+        label: '保存草稿',
+        onPress: () => {
+          const reply = replyToRef.current;
+          saveCommentDraft({
+            topicId: topic.id,
+            body,
+            replyToId: reply?.id,
+            replyToName: reply?.authorName,
+            replyToFloor: reply?.floor ?? undefined,
+          });
+          leaveTopicNow();
+        },
+      },
+      {
+        label: '舍弃并退出',
+        danger: true,
+        onPress: () => {
+          clearCommentDraft(topic.id);
+          leaveTopicNow();
+        },
+      },
+    ]);
+  };
+  useAndroidBack(true, () => {
     if (commentMenu) {
       setCommentMenu(null);
+      return;
+    }
+    if (draftPrompt) {
+      setDraftPrompt(null);
       return;
     }
     if (commentEditor.emojiOpen) commentEditor.setEmojiOpen(false);
     else if (composerTools) setComposerTools(false);
     else if (reactTarget) setReactTarget(null);
     else if (donateOpen) setDonateOpen(false);
-    else setReplyTo(null);
+    else if (replyTo) setReplyTo(null);
+    else leaveTopic();
   });
   const dto = detail.data?.topic && String(detail.data.topic.id) === String(topic.id) ? detail.data.topic : undefined;
   const topicReady = Boolean(dto);
@@ -1261,6 +1517,57 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     } catch {
       /* 认领结果拿不到就等下次刷新 */
     }
+  };
+
+  /**
+   * 追加红包（红包卡片里，只有楼主能看到）。份数/积分由页面给的限值约束，
+   * 服务端还会用 `expected_*` 校验期间有没有被别人领走，失败时把原话提示出来。
+   */
+  const topupRedPacket = async (count: string, amount: string) => {
+    if (!requireLogin()) return;
+    setTopupBusy(true);
+    try {
+      const result = await api.topupRedPacket(topic.id, { count, amount });
+      detail.setData((prev) => (prev
+        ? { ...prev, redPacket: result.card ?? prev.redPacket, redPacketTopup: result.topup }
+        : prev));
+      nav.toast(result.message || '红包已追加');
+    } catch (err) {
+      nav.toast(err instanceof ApiError ? err.message : '追加失败');
+    } finally {
+      setTopupBusy(false);
+    }
+  };
+
+  const approveRedPacket = (item: CommentDto, decision: string, label: string) => {
+    if (!requireLogin()) return;
+    setDialog({
+      title: label || '楼主认可',
+      text: '认可后按官方规则发放红包积分。',
+      confirmLabel: label || '楼主认可',
+      onConfirm: async () => {
+        setReviewBusy(item.id);
+        try {
+          const result = await api.reviewRedPacket(topic.id, item.id, decision);
+          commentsQuery.setData((prev) => (prev
+            ? {
+              ...prev,
+              items: prev.items.map((row) => (row.id === item.id ? { ...row, ...result.comment } : row)),
+            }
+            : prev));
+          if (result.card) {
+            detail.setData((prev) => (prev ? { ...prev, redPacket: result.card } : prev));
+          } else {
+            void settleRedPacket(item.id, result.comment.redPacket);
+          }
+          nav.toast(result.message || (result.comment.redPacket?.tip || '已认可'));
+        } catch (err) {
+          nav.toast(err instanceof ApiError ? err.message : '认可失败');
+        } finally {
+          setReviewBusy(null);
+        }
+      },
+    });
   };
 
   const requireLogin = () => {
@@ -1337,9 +1644,11 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     }
   };
   const deleteTopic = () => {
+    // 确认文案以官网为准（含免费/计费期限与「删除后不可自行恢复」），页面上没有才用兜底。
+    const official = detail.data?.deleteLock?.confirm;
     setDialog({
       title: '删除主题',
-      text: '删除后无法恢复。',
+      text: official || '删除后无法恢复。',
       confirmLabel: '删除',
       danger: true,
       onConfirm: async () => {
@@ -1420,7 +1729,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     loginRequired: commentsQuery.data?.loginRequired,
   });
   const hasNextComments = Boolean(commentsQuery.data?.nextCursor);
-  const targetReplyId = seekReplyId || replyId;
+  const targetReplyId = seekReplyId;
   const shownPage = commentPage === 0 ? (commentsQuery.data?.page ?? 1) : commentPage;
   const pageImages = useMemo(() => uniqueImages([
     ...collectArticleImages(current.body ?? ''),
@@ -1471,13 +1780,13 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
   const jumpComment = useMemo(() => {
     if (targetReplyId) return comments.find((item) => item.id === targetReplyId) ?? null;
     if (seekFloor) return comments.find((item) => String(item.floor) === String(seekFloor)) ?? null;
-    if (!latest) return null;
+    if (jumpFollow !== 'auto' || !latest) return null;
     if (topic.unreadFloor) {
-      const floor = String(topic.unreadFloor);
-      return comments.find((item) => String(item.floor) === floor) ?? null;
+      const floorNo = String(topic.unreadFloor);
+      return comments.find((item) => String(item.floor) === floorNo) ?? null;
     }
     return latestComment;
-  }, [targetReplyId, seekFloor, latest, topic.unreadFloor, comments, latestComment]);
+  }, [targetReplyId, seekFloor, jumpFollow, latest, topic.unreadFloor, comments, latestComment]);
   useEffect(() => {
     const targetId = jumpComment?.id;
     if (!targetId) return;
@@ -1495,30 +1804,64 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
       setHighlightId(targetReplyId);
       return;
     }
-    if (jumpComment?.id) setHighlightId(jumpComment.id);
-  }, [targetReplyId, jumpComment?.id]);
+    if (jumpFollow === 'auto' && jumpComment?.id) setHighlightId(jumpComment.id);
+  }, [targetReplyId, jumpFollow, jumpComment?.id]);
   useEffect(() => {
     locatedJumpRef.current = '';
   }, [topic.id, commentPage, latest, targetReplyId, seekFloor]);
   useEffect(() => {
-    if (!latest && !targetReplyId && !seekFloor) return;
-    if (commentsQuery.loading || commentsQuery.fetching) return;
+    if (jumpFollowRef.current !== 'auto') return;
+    if (commentsQuery.fetching) {
+      seenCommentFetchRef.current = true;
+      return;
+    }
+    if (commentsQuery.loading || !seenCommentFetchRef.current) return;
+    if (!commentsPageMatches(commentPage, commentsQuery.data?.page)) return;
+    const last = Math.max(
+      commentsQuery.data?.lastPage ?? 1,
+      detail.data?.topic.lastPage ?? 1,
+      topic.lastPage ?? 1,
+    );
+    if (shouldChaseLatestPage({
+      follow: 'auto',
+      latest,
+      replyLocked: Boolean(replyId || seekReplyId || floor || seekFloor),
+      unreadPage: topic.unreadPage,
+      unreadFloor: topic.unreadFloor,
+      commentPage,
+      lastPage: last,
+    })) return;
+    if (!latest && !targetReplyId && !seekFloor) {
+      jumpFollowRef.current = 'idle';
+      setJumpFollow('idle');
+      return;
+    }
     const targetId = targetReplyId || jumpComment?.id || null;
-    if (!targetId) return;
-    const key = `${topic.id}:${shownPage}:${targetId}`;
-    if (locatedJumpRef.current === key) return;
-    locatedJumpRef.current = key;
-    let cancelled = false;
-    const timers = [40, 120, 280, 480].map((ms) => setTimeout(() => {
-      if (!cancelled) locateCommentInView(targetId);
-    }, ms));
-    return () => {
-      cancelled = true;
-      timers.forEach(clearTimeout);
-    };
-  }, [latest, targetReplyId, seekFloor, jumpComment?.id, topic.id, commentsQuery.loading, commentsQuery.fetching, shownPage, locateCommentInView]);
+    if (targetId) {
+      const key = `${topic.id}:${shownPage}:${targetId}`;
+      if (locatedJumpRef.current !== key) {
+        locatedJumpRef.current = key;
+        let cancelled = false;
+        const timers = [40, 120, 280, 480].map((ms) => setTimeout(() => {
+          if (!cancelled && jumpFollowRef.current === 'auto') locateCommentInView(targetId);
+        }, ms));
+        const idleTimer = setTimeout(() => {
+          if (cancelled || jumpFollowRef.current !== 'auto') return;
+          jumpFollowRef.current = 'idle';
+          setJumpFollow('idle');
+        }, 520);
+        return () => {
+          cancelled = true;
+          timers.forEach(clearTimeout);
+          clearTimeout(idleTimer);
+        };
+      }
+    }
+    jumpFollowRef.current = 'idle';
+    setJumpFollow('idle');
+  }, [latest, targetReplyId, seekFloor, jumpComment?.id, topic.id, topic.unreadPage, topic.unreadFloor, topic.lastPage, replyId, floor, seekReplyId, commentsQuery.loading, commentsQuery.fetching, commentsQuery.data?.page, commentsQuery.data?.lastPage, commentsQuery.data?.items, detail.data?.topic.lastPage, shownPage, commentPage, locateCommentInView]);
   useEffect(() => {
-    if (!latest || targetReplyId || jumpComment?.id || topic.unreadFloor) return;
+    if (!latest || jumpFollow !== 'auto' || targetReplyId || jumpComment?.id || topic.unreadFloor) return;
     if (commentsQuery.loading || commentsQuery.fetching) return;
     if (!commentsAnchor) return;
     const key = `${topic.id}:${commentPage}:anchor`;
@@ -1527,7 +1870,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ y: Math.max(0, commentsAnchor - 8), animated: true });
     });
-  }, [latest, targetReplyId, jumpComment?.id, topic.unreadFloor, topic.id, commentsQuery.loading, commentsQuery.fetching, commentsAnchor, commentPage]);
+  }, [latest, jumpFollow, targetReplyId, jumpComment?.id, topic.unreadFloor, topic.id, commentsQuery.loading, commentsQuery.fetching, commentsAnchor, commentPage]);
   const patchComment = (id: string, next: Partial<CommentDto>) => {
     commentsQuery.setData((prev) => prev
       ? { ...prev, items: prev.items.map((item) => (item.id === id ? { ...item, ...next } : item)) }
@@ -1568,6 +1911,13 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     }
     setReactTarget(item);
   };
+  const browseCommentPage = (page: number) => {
+    jumpFollowRef.current = 'idle';
+    setJumpFollow('idle');
+    setSeekReplyId(undefined);
+    setSeekFloor(undefined);
+    setCommentPage(Math.max(1, page));
+  };
   const jumpToComment = (target: { id?: string | null; floor?: string | null }) => {
     const id = String(target.id || '').trim();
     const floorNo = String(target.floor || '').trim();
@@ -1583,6 +1933,9 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
       return;
     }
     if (id) {
+      jumpFollowRef.current = 'auto';
+      setJumpFollow('auto');
+      seenCommentFetchRef.current = false;
       setSeekFloor(undefined);
       setSeekReplyId(id);
       setCommentPage(0);
@@ -1591,6 +1944,9 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
       return;
     }
     if (floorNo) {
+      jumpFollowRef.current = 'auto';
+      setJumpFollow('auto');
+      seenCommentFetchRef.current = false;
       setSeekReplyId(undefined);
       setSeekFloor(floorNo);
       setCommentPage(0);
@@ -1657,13 +2013,13 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
         }}
       >
         <View style={[styles.commentAvatarCol, nested && styles.commentAvatarColNested]}>
-          <Pressable onPress={() => openCommentUser(item)} hitSlop={6}>
+          <Pressable onPress={() => openCommentUser(item)} hitSlop={6} style={({ pressed }) => pressed && styles.pressFade}>
             <UserAvatar name={item.authorName} url={item.avatar.includes('/') ? item.avatar : undefined} accent={item.accent} size={avatarSize} radius={avatarSize / 2} online={Boolean(item.online)} />
           </Pressable>
         </View>
         <View style={styles.commentBody}>
           <View style={styles.commentHead}>
-            <Pressable onPress={() => openCommentUser(item)} hitSlop={6} style={styles.commentNameHit}>
+            <Pressable onPress={() => openCommentUser(item)} hitSlop={6} style={({ pressed }) => [styles.commentNameHit, pressed && styles.pressFade]}>
               <Text numberOfLines={1} style={styles.commentName}>{item.authorName}</Text>
             </Pressable>
             <TitleBadges
@@ -1686,6 +2042,26 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
               <CompactTag tone={/不会/.test(item.essenceLabel) ? 'default' : 'warning'}>
                 {item.essenceLabel}
               </CompactTag>
+            </View>
+          ) : null}
+          {item.redPacketReview && (item.redPacketReview.label || item.redPacketReview.actions.length) ? (
+            <View style={styles.commentPacketHint}>
+              {item.redPacketReview.label ? (
+                <CompactTag tone={item.redPacketReview.state === 'pending' ? 'warning' : 'default'}>
+                  {item.redPacketReview.label}
+                </CompactTag>
+              ) : null}
+              {item.redPacketReview.actions.map((action) => (
+                <OutlineButton
+                  key={`${item.id}-${action.decision}`}
+                  compact
+                  label={reviewBusy === item.id ? '处理中' : action.label}
+                  onPress={() => {
+                    if (reviewBusy) return;
+                    approveRedPacket(item, action.decision, action.label);
+                  }}
+                />
+              ))}
             </View>
           ) : null}
           {replyHint ? (
@@ -1769,7 +2145,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
     <View style={styles.flex}>
       <ScreenHeader
         title={topicFailed ? (topicErrorKind(detail.error) === 'gone' ? '走丢了' : '主题') : (!topicReady && !topic.author) ? '主题' : current.forum}
-        onBack={onBack}
+        onBack={leaveTopic}
         right={(
           <View style={styles.headerActions}>
             <IconButton name="desktop-outline" onPress={openTopicWeb} />
@@ -1827,7 +2203,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
               return;
             }
             nav.openUser(id);
-          }} hitSlop={6} style={styles.avatarHit}>
+          }} hitSlop={6} style={({ pressed }) => [styles.avatarHit, pressed && styles.pressFade]}>
             <UserAvatar name={current.author} url={current.avatarUrl} accent={current.accent} size={38} online={Boolean(dto?.online ?? current.online)} />
           </Pressable>
           <View style={styles.authorCopy}>
@@ -1839,7 +2215,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
                   return;
                 }
                 nav.openUser(id);
-              }} hitSlop={6}>
+              }} hitSlop={6} style={({ pressed }) => pressed && styles.pressFade}>
                 <Text style={styles.authorName}>{current.author}</Text>
               </Pressable>
               <TitleBadges
@@ -1924,7 +2300,15 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
           />
         ) : null}
         {detail.data?.redPacket ? (
-          <TopicRedPacketCard redPacket={detail.data.redPacket} />
+          <TopicRedPacketCard redPacket={detail.data.redPacket}>
+            {detail.data.redPacketTopup ? (
+              <TopicRedPacketTopupForm
+                topup={detail.data.redPacketTopup}
+                busy={topupBusy}
+                onSubmit={topupRedPacket}
+              />
+            ) : null}
+          </TopicRedPacketCard>
         ) : null}
         {detail.data?.virtualCard ? (
           <TopicVirtualCard
@@ -2103,11 +2487,11 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
         })}
         {shownPage > 1 || hasNextComments ? (
           <View style={styles.pager}>
-            <Pressable disabled={shownPage <= 1 || commentsQuery.fetching} onPress={() => setCommentPage(Math.max(1, shownPage - 1))} style={[styles.pagerBtn, shownPage <= 1 && styles.pagerBtnOff]}>
+            <Pressable disabled={shownPage <= 1 || commentsQuery.fetching} onPress={() => browseCommentPage(shownPage - 1)} style={[styles.pagerBtn, shownPage <= 1 && styles.pagerBtnOff]}>
               <Text style={styles.pagerText}>上一页</Text>
             </Pressable>
             <Text style={styles.pagerNow}>第 {shownPage} 页</Text>
-            <Pressable disabled={!hasNextComments || commentsQuery.fetching} onPress={() => setCommentPage(shownPage + 1)} style={[styles.pagerBtn, !hasNextComments && styles.pagerBtnOff]}>
+            <Pressable disabled={!hasNextComments || commentsQuery.fetching} onPress={() => browseCommentPage(shownPage + 1)} style={[styles.pagerBtn, !hasNextComments && styles.pagerBtnOff]}>
               <Text style={styles.pagerText}>下一页</Text>
             </Pressable>
           </View>
@@ -2132,12 +2516,14 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
             <Icon name="close" size={12} color={C.muted} />
           </Pressable>
         ) : null}
-        {/* 红包帖：官方把领取门槛写在卡片上，回复框这里也得说清楚，否则用户不知道为什么要凑字数 */}
-        {nav.loggedIn && redPacketNeed ? (
+        {/* 红包帖：官方把领取门槛写在卡片上，回复框这里跟一句；现行是楼主认可，旧帖才是字数。 */}
+        {nav.loggedIn && redPacket && redPacket.state === 'open' ? (
           <View style={styles.commentPacketHint}>
-            <CompactTag tone="danger">红包帖</CompactTag>
+            <CompactTag tone="danger">{redPacket.status || '红包帖'}</CompactTag>
             <Text style={styles.commentPacketHintText}>
-              {`${redPacketNeed.value || redPacketNeed.note}${redPacketNeed.note && redPacketNeed.value ? `（${redPacketNeed.note}）` : ''}，合格回复领取积分红包`}
+              {redPacketHint
+                ? `${redPacketHint.value || redPacketHint.note}${redPacketHint.note && redPacketHint.value ? `（${redPacketHint.note}）` : ''}`
+                : (redPacket.rule || '回复后按红包卡片规则领取')}
             </Text>
           </View>
         ) : null}
@@ -2241,6 +2627,7 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
                   };
                   commentEditor.clear();
                   setReplyTo(null);
+                  clearCommentDraft(topic.id);
                   commentEditor.setEmojiOpen(false);
                   setComposerTools(false);
                   setJustPostedId(filled.id || null);
@@ -2357,6 +2744,15 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
         }}
       />
       <ConfirmDialog dialog={dialog} onClose={() => setDialog(null)} />
+      <ActionSheet
+        items={draftPrompt}
+        title={draftPromptTitle}
+        onClose={() => {
+          pendingDraftRef.current = null;
+          draftKindRef.current = null;
+          setDraftPrompt(null);
+        }}
+      />
       <ActionSheet items={commentMenu} onClose={() => setCommentMenu(null)} />
       <TopicAlbumSheet
         visible={albumOpen}

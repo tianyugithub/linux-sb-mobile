@@ -8,7 +8,7 @@ import { usePrefs } from '../hooks/usePrefs';
 import { useTopicFilter } from '../hooks/useTopicFilter';
 import { C } from '../theme/palette';
 import { styles } from '../theme/app-styles';
-import { stubTopic, useNav } from '../navigation/nav';
+import { chromePad, stubTopic, useAppInsets, useNav } from '../navigation/nav';
 import { cacheGet, cacheSet } from '../services/query-cache';
 import { FilterBar, Icon, IconButton, ListFooter, Logo, StatusBlock, UserAvatar,
   RowSeparator,
@@ -28,8 +28,9 @@ export const NOTICE_TEXT = '本站仍然不能讨论翻墙以及其他违法违�
 export function Header({ onSearch, onProfile }: { onSearch: () => void; onProfile: () => void }) {
   const nav = useNav();
   const unread = nav.loggedIn ? nav.unread : 0;
+  const insets = useAppInsets();
   return (
-    <View style={styles.header}>
+    <View style={[styles.header, chromePad(insets.top)]}>
       <Logo />
       <View style={styles.headerActions}>
         <IconButton name="search-outline" onPress={onSearch} />

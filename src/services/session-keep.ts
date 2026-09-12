@@ -97,3 +97,18 @@ export function shouldClearSessionOnRefreshFailure(opts: {
   if (opts.hasAuthCookie) return false;
   return true;
 }
+
+/**
+ * 退出后的善后（延迟清 CookieManager、后台 POST /logout）只能跟着「这一次退出」。
+ *
+ * 实测：登录 → 切通道 → 退出 → 再切回来 → 马上再登录。退出时挂起的
+ * GET / + POST /logout 还在飞（切通道会 evict 连接、DoH/QUIC 更慢），
+ * 登录成功后才落到官网，把刚发的 bbs_auth 作废，界面就跳回未登录。
+ */
+export function shouldFollowThroughSignedOutWork(opts: {
+  startedGeneration: number;
+  currentGeneration: number;
+  signedOut: boolean;
+}): boolean {
+  return opts.signedOut && opts.startedGeneration === opts.currentGeneration;
+}

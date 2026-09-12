@@ -6,9 +6,8 @@ import okhttp3.Interceptor
 import okhttp3.Response
 
 /**
- * 镜像通道：linux.sb / cap.linux.sb 改写到 lsb.miapi.cc / cap-lsb.miapi.cc，
- * DNS 钉到美国机 154.12.50.175，由那边 HTTP 反代到官网。
- * DoH / 直连：请求仍是官网域名；旧镜像地址折回官网；ClientHello 拆成两个 TLS 记录。
+ * DoH / 直连：请求仍是官网域名；旧镜像地址（lsb.miapi.cc）折回官网；
+ * ClientHello 拆成两个 TLS 记录。旧版「镜像」通道已下线，偏好里的 mirror 折成 doh。
  */
 object LinuxAccess {
   const val PREFS = "lsb_access"
@@ -19,21 +18,17 @@ object LinuxAccess {
   const val MIRROR_HOST = "lsb.miapi.cc"
   const val CAP_MIRROR_HOST = "cap-lsb.miapi.cc"
   const val CAP_PREFIX = "/__cap__"
-  const val MIRROR_A = 154
-  const val MIRROR_B = 12
-  const val MIRROR_C = 50
-  const val MIRROR_D = 175
 
   @Volatile
   private var app: Context? = null
 
   @Volatile
-  private var channel: String = MIRROR
+  private var channel: String = DOH
 
   fun init(context: Context) {
     val ctx = context.applicationContext
     app = ctx
-    channel = normalize(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_CHANNEL, MIRROR))
+    channel = normalize(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_CHANNEL, DOH))
     applyTransport()
   }
 
@@ -45,28 +40,16 @@ object LinuxAccess {
     applyTransport()
     DohDns.instance.clearLinux()
     LinuxHttp.evict()
+    H3.onAccessChannelChanged()
   }
 
-  fun usingMirror(): Boolean = channel == MIRROR
+  fun usingMirror(): Boolean = false
 
   fun usingDoh(): Boolean = channel == DOH
 
   fun rewrite(url: HttpUrl): HttpUrl? {
     val host = url.host.lowercase()
     val path = url.encodedPath
-    if (usingMirror()) {
-      if (host == "cap.linux.sb" || host == CAP_MIRROR_HOST) {
-        return if (host == CAP_MIRROR_HOST) null else url.newBuilder().host(CAP_MIRROR_HOST).build()
-      }
-      if (host == "linux.sb" || host == MIRROR_HOST) {
-        if (path == CAP_PREFIX || path.startsWith("$CAP_PREFIX/")) {
-          val stripped = if (path == CAP_PREFIX) "/" else path.substring(CAP_PREFIX.length)
-          return url.newBuilder().host(CAP_MIRROR_HOST).encodedPath(stripped).build()
-        }
-        return if (host == MIRROR_HOST) null else url.newBuilder().host(MIRROR_HOST).build()
-      }
-      return null
-    }
     if (host == CAP_MIRROR_HOST) {
       return url.newBuilder().host("cap.linux.sb").build()
     }
@@ -81,21 +64,15 @@ object LinuxAccess {
   }
 
   private fun applyTransport() {
-    val split = channel != MIRROR
-    TlsFrag.configure(split)
-    if (split) {
-      TlsEch.prefetch("linux.sb")
-      TlsEch.prefetch("cap.linux.sb")
-    } else {
-      TlsEch.forget()
-    }
+    TlsFrag.configure(true)
+    TlsEch.prefetch("linux.sb")
+    TlsEch.prefetch("cap.linux.sb")
   }
 
   private fun normalize(value: String?): String {
     return when (value) {
       DIRECT -> DIRECT
-      DOH -> DOH
-      else -> MIRROR
+      else -> DOH
     }
   }
 }

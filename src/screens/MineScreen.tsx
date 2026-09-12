@@ -10,8 +10,10 @@ import { UserAvatar } from '../components/ui';
 import { C, registerStyleSync, type Palette } from '../theme/palette';
 import { nutThemeFor } from '../theme/nut-mine';
 import { APP_NAME, APP_VERSION } from '../data/app-info';
+import { useAppInsets } from '../navigation/nav';
 
-const HERO_BG = require('../../assets/mine-hero.png');
+const HERO_LIGHT = require('../../assets/mine-hero.png');
+const HERO_DARK = require('../../assets/mine-hero-dark.png');
 
 type MineActions = {
   me: Member;
@@ -93,21 +95,15 @@ function Card({ title, extra, children }: { title: string; extra?: React.ReactNo
 
 function MineBody(props: MineActions) {
   const { me, loggedIn, checkedIn, unread, refreshing, onRefresh } = props;
+  const insets = useAppInsets();
   return (
-    <ScrollView
-      style={styles.page}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-      refreshControl={onRefresh ? (
-        <RefreshControl
-          refreshing={Boolean(refreshing)}
-          onRefresh={() => { void onRefresh(); }}
-          tintColor="#E1251B"
-          colors={['#E1251B']}
-        />
-      ) : undefined}
-    >
-      <ImageBackground source={HERO_BG} resizeMode="cover" style={styles.hero} imageStyle={styles.heroImage}>
+    <View style={styles.page}>
+      <ImageBackground
+        source={C.scheme === 'light' ? HERO_LIGHT : HERO_DARK}
+        resizeMode="cover"
+        style={[styles.hero, { paddingTop: 10 + insets.top }]}
+        imageStyle={styles.heroImage}
+      >
         <View style={styles.heroTop}>
           <View style={styles.identity}>
             <Pressable onPress={loggedIn ? props.onUser : props.onLogin} hitSlop={6}>
@@ -120,14 +116,14 @@ function MineBody(props: MineActions) {
                   size={60}
                   radius={30}
                   online={loggedIn}
-                  dotRing="rgba(255,255,255,0.9)"
+                  dotRing={C.scheme === 'light' ? 'rgba(255,255,255,0.9)' : C.canvas}
                 />
               </View>
             </Pressable>
             <View style={styles.identityText}>
               <Pressable onPress={loggedIn ? props.onUser : props.onLogin} style={styles.nameRow} hitSlop={6}>
                 <Text numberOfLines={1} style={styles.name}>{me.name}</Text>
-                {loggedIn ? <Ionicons name="chevron-forward" size={16} color="#666" /> : null}
+                {loggedIn ? <Ionicons name="chevron-forward" size={16} color={C.muted} /> : null}
               </Pressable>
               {loggedIn ? (
                 <View style={styles.badgeRow}>
@@ -143,7 +139,7 @@ function MineBody(props: MineActions) {
           </View>
           {loggedIn ? (
             <Pressable onPress={props.onSettings} hitSlop={10} style={styles.settingsBtn}>
-              <Ionicons name="settings-outline" size={20} color="#1A1A1A" />
+              <Ionicons name="settings-outline" size={20} color={C.text} />
             </Pressable>
           ) : (
             <Pressable onPress={props.onLogin} style={styles.loginChip}>
@@ -160,6 +156,19 @@ function MineBody(props: MineActions) {
         <LinearGradient colors={[C.fade, C.canvas]} style={styles.heroFade} pointerEvents="none" />
       </ImageBackground>
 
+      <ScrollView
+        style={styles.sheetScroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={onRefresh ? (
+          <RefreshControl
+            refreshing={Boolean(refreshing)}
+            onRefresh={() => { void onRefresh(); }}
+            tintColor="#E1251B"
+            colors={['#E1251B']}
+          />
+        ) : undefined}
+      >
       <View style={styles.sheet}>
         <Card
           title="我的帖务"
@@ -229,7 +238,8 @@ function MineBody(props: MineActions) {
         {/* 版本号只有 app.json 一个来源（src/data/app-info.ts），这里以前写死成 v0.1.4 */}
         <Text style={styles.version}>{`${APP_NAME} · v${APP_VERSION}`}</Text>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -244,30 +254,44 @@ export function MineScreen(props: MineActions) {
 function createMineStyles(C: Palette) {
   return StyleSheet.create({
   page: { flex: 1, backgroundColor: C.canvas },
+  sheetScroll: { flex: 1 },
   content: { paddingBottom: 28 },
-  hero: { overflow: 'hidden', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 44 },
+  hero: { overflow: 'hidden', paddingHorizontal: 16, paddingBottom: 32 },
   heroImage: { resizeMode: 'cover' },
-  heroFade: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 40 },
+  heroFade: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 32 },
   heroTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   identity: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, minWidth: 0 },
-  avatarRing: { width: 64, height: 64, borderRadius: 32, padding: 2, backgroundColor: 'rgba(255,255,255,0.9)' },
+  avatarRing: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    padding: 2,
+    backgroundColor: C.scheme === 'light' ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.14)',
+  },
   avatarFill: { flex: 1, borderRadius: 30, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   avatarImage: { width: 60, height: 60, borderRadius: 30 },
   avatarLetter: { color: '#fff', fontSize: 22, fontWeight: '800' },
   identityText: { flex: 1, minWidth: 0 },
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  name: { color: '#1A1A1A', fontSize: 20, fontWeight: '800', flexShrink: 1 },
+  name: { color: C.text, fontSize: 20, fontWeight: '800', flexShrink: 1 },
   badgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' },
-  uid: { color: '#666666', fontSize: 11 },
-  guestHint: { color: '#555555', fontSize: 12, marginTop: 6 },
-  settingsBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.06)', alignItems: 'center', justifyContent: 'center' },
+  uid: { color: C.muted, fontSize: 11 },
+  guestHint: { color: C.muted, fontSize: 12, marginTop: 6 },
+  settingsBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: C.scheme === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   loginChip: { height: 32, paddingHorizontal: 16, borderRadius: 16, backgroundColor: C.red, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   loginChipText: { color: '#fff', fontSize: 13, fontWeight: '800' },
   stats: { flexDirection: 'row', marginTop: 22 },
   stat: { flex: 1, alignItems: 'center' },
-  statValue: { color: '#1A1A1A', fontSize: 20, fontWeight: '800' },
-  statLabel: { color: '#666666', fontSize: 11, marginTop: 4 },
-  sheet: { marginTop: -28, paddingHorizontal: 12, gap: 12 },
+  statValue: { color: C.text, fontSize: 20, fontWeight: '800' },
+  statLabel: { color: C.muted, fontSize: 11, marginTop: 4 },
+  sheet: { paddingHorizontal: 12, paddingTop: 4, gap: 12 },
   card: { backgroundColor: C.card, borderRadius: 12, overflow: 'hidden' },
   cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 4 },
   cardTitle: { color: C.text, fontSize: 15, fontWeight: '800' },

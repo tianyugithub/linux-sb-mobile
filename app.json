@@ -2,7 +2,7 @@
   "expo": {
     "name": "LINUX SB",
     "slug": "linux-sb-mobile",
-    "version": "0.1.18",
+    "version": "0.1.33",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -26,7 +26,7 @@
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#FFFFFF"
       },
-      "versionCode": 145,
+      "versionCode": 160,
       "permissions": [
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECEIVE_BOOT_COMPLETED",

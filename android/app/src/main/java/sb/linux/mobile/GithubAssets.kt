@@ -10,24 +10,28 @@ import java.io.ByteArrayInputStream
 import java.util.concurrent.TimeUnit
 
 /**
- * GitHub 页面 HTML 能走香港节点，但 CSS/JS/字体在 github.githubassets.com（Fastly），
- * 国内连不上。内置 WebView 拦截这些请求，改从 gh-proxy 拉，URL 仍是原域名，不破坏 CSP。
+ * GitHub 页面的 CSS/JS/字体在 github.githubassets.com（Fastly），国内常连不上。
+ * 内置 WebView 拦截这些请求：先试原 URL（VPN / 海外出口通常直接通），再回落到
+ * gh-proxy。URL 对外仍是原域名，不破坏 CSP。
  */
 object GithubAssets {
   private val proxies = listOf("https://gh-proxy.com/", "https://ghfast.top/")
 
-  private val client: OkHttpClient by lazy {
-    try {
+  private val proxyClient: OkHttpClient by lazy { buildClient(8, 20) }
+  private val directClient: OkHttpClient by lazy { buildClient(2, 6) }
+
+  private fun buildClient(connectSec: Long, readSec: Long): OkHttpClient {
+    return try {
       OkHttpClientProvider.getOkHttpClient().newBuilder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(connectSec, TimeUnit.SECONDS)
+        .readTimeout(readSec, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
     } catch (_: Exception) {
       OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(connectSec, TimeUnit.SECONDS)
+        .readTimeout(readSec, TimeUnit.SECONDS)
         .dns(DohDns.instance)
         .build()
     }
@@ -41,8 +45,9 @@ object GithubAssets {
     val url = request.url?.toString().orEmpty()
     if (!isStatic(url)) return null
     if (hasHeader(request, "Range")) return null
+    fetch(directClient, url, request)?.let { return it }
     for (prefix in proxies) {
-      fetch(prefix + url, request)?.let { return it }
+      fetch(proxyClient, prefix + url, request)?.let { return it }
     }
     return null
   }
@@ -64,7 +69,7 @@ object GithubAssets {
       || host == "identicons.github.com"
   }
 
-  private fun fetch(url: String, request: WebResourceRequest): WebResourceResponse? {
+  private fun fetch(http: OkHttpClient, url: String, request: WebResourceRequest): WebResourceResponse? {
     return try {
       val builder = Request.Builder().url(url)
       request.requestHeaders?.forEach { (key, value) ->
@@ -72,7 +77,7 @@ object GithubAssets {
         if (key.equals("Host", true) || key.equals("Cookie", true)) return@forEach
         builder.header(key, value)
       }
-      client.newCall(builder.build()).execute().use { response ->
+      http.newCall(builder.build()).execute().use { response ->
         if (!response.isSuccessful) return null
         val body = response.body ?: return null
         val contentType = response.header("Content-Type").orEmpty()

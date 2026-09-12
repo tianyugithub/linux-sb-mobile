@@ -8,6 +8,16 @@ import { styles } from '../theme/app-styles';
 import { hydrateTopicSeen, subscribeTopicSeen, topicShowsUnread } from '../utils/topic-seen';
 import { CompactTag, Icon, UserAvatar, pickUserId, stampLabel, stampTone, topicTagList } from './ui';
 
+function stampInlineTone(tone: ReturnType<typeof stampTone>) {
+  if (tone === 'danger') return styles.topicStampInlineDanger;
+  if (tone === 'warning') return styles.topicStampInlineWarning;
+  if (tone === 'success') return styles.topicStampInlineSuccess;
+  if (tone === 'info') return styles.topicStampInlineInfo;
+  if (tone === 'essence') return styles.topicStampInlineEssence;
+  if (tone === 'essenceNeg') return styles.topicStampInlineEssenceNeg;
+  return styles.topicStampInlineDefault;
+}
+
 export function TopicRow({ topic, onPress, onUnread }: { topic: Topic; onPress: () => void; onUnread?: () => void }) {
   const nav = useNav();
   const { fontFactor } = usePrefs();
@@ -37,18 +47,31 @@ export function TopicRow({ topic, onPress, onUnread }: { topic: Topic; onPress: 
     if (unread) (onUnread ?? onPress)();
     else onPress();
   };
+  const titleStyle = scaleTextStyle(styles.topicTitle, fontFactor);
+  const stampStyle = scaleTextStyle(styles.topicStampInline, fontFactor);
   return (
     <View style={styles.topicRow}>
-      <Pressable onPress={openAuthor} hitSlop={8} style={styles.avatarHit}>
+      <Pressable onPress={openAuthor} hitSlop={8} style={({ pressed }) => [styles.avatarHit, pressed && styles.pressFade]}>
         <UserAvatar name={topic.author} url={topic.avatarUrl} accent={topic.accent} online={Boolean(topic.online)} />
       </Pressable>
       <View style={styles.topicBody}>
         <View style={styles.topicTitleLine}>
-          {left.map((tag) => (
-            <CompactTag key={`${tag.type}-${tag.label}`} tone={stampTone(tag.type, tag.label, tag.kind)}>{stampLabel(tag)}</CompactTag>
-          ))}
           <Pressable onPress={openListed} style={({ pressed }) => [styles.topicTitleHit, pressed && styles.pressed]}>
-            <Text numberOfLines={2} style={scaleTextStyle(styles.topicTitle, fontFactor)}>{topic.title}</Text>
+            <Text numberOfLines={2} style={titleStyle}>
+              {left.map((tag) => (
+                <Text
+                  key={`${tag.type}-${tag.label}`}
+                  style={[
+                    stampStyle,
+                    stampInlineTone(stampTone(tag.type, tag.label, tag.kind)),
+                    titleStyle.lineHeight ? { lineHeight: titleStyle.lineHeight } : null,
+                  ]}
+                >
+                  {'\u00A0'}{stampLabel(tag)}{'\u00A0'}{' '}
+                </Text>
+              ))}
+              {topic.title}
+            </Text>
           </Pressable>
           {after.map((tag) => (
             <CompactTag
@@ -70,14 +93,14 @@ export function TopicRow({ topic, onPress, onUnread }: { topic: Topic; onPress: 
           <Text numberOfLines={2} style={styles.topicReplyExcerpt}>{topic.body}</Text>
         ) : null}
         <View style={styles.metaLine}>
-          <Pressable onPress={openAuthor} hitSlop={6} style={styles.metaItem}>
+          <Pressable onPress={openAuthor} hitSlop={6} style={({ pressed }) => [styles.metaItem, pressed && styles.pressFade]}>
             <Icon name="person-outline" size={13} />
             <Text style={styles.meta} numberOfLines={1}>{topic.author}</Text>
           </Pressable>
           <View style={styles.metaItem}><Icon name="folder-outline" size={13} /><Text style={styles.meta} numberOfLines={1}>{topic.forum}</Text></View>
           <View style={styles.metaItem}><Icon name="chatbubble-outline" size={13} /><Text style={styles.meta}>{String(topic.replies)}</Text></View>
           {topic.lastReplier ? (
-            <Pressable onPress={lastReplierId ? openLastReplier : openListed} hitSlop={6} style={styles.metaItem}>
+            <Pressable onPress={lastReplierId ? openLastReplier : openListed} hitSlop={6} style={({ pressed }) => [styles.metaItem, pressed && styles.pressFade]}>
               <Icon name="person-outline" size={13} />
               <Text style={styles.meta} numberOfLines={1}>{topic.lastReplier}</Text>
             </Pressable>

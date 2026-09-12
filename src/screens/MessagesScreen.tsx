@@ -7,7 +7,7 @@ import { useAsync } from '../hooks/useAsync';
 import { usePagedList } from '../hooks/usePagedList';
 import { C } from '../theme/palette';
 import { styles } from '../theme/app-styles';
-import { useNav } from '../navigation/nav';
+import { chromePad, useAppInsets, useNav } from '../navigation/nav';
 import { Icon, ListFooter, PrimaryButton, ScreenHeader, StatusBlock, UserAvatar, pickUserId } from '../components/ui';
 
 export const MSG_FILTERS = ['全部', '提及', '打赏', '系统'] as const;
@@ -75,6 +75,7 @@ export function MessageCard({ item, onPress }: { item: MessageItem; onPress: () 
 
 export function MessagesScreen() {
   const nav = useNav();
+  const insets = useAppInsets();
   const [filter, setFilter] = useState<MsgFilter>('全部');
   const kindOf = (label: MsgFilter) => (label === '全部' ? null : ({ 提及: 'mention', 打赏: 'reward', 系统: 'system' } as const)[label]);
   const list = usePagedList(async (cursor) => {
@@ -115,7 +116,7 @@ export function MessagesScreen() {
   };
   return (
     <View style={styles.flex}>
-      <View style={styles.jdMsgHeader}>
+      <View style={[styles.jdMsgHeader, chromePad(insets.top)]}>
         <Text style={styles.jdMsgPageTitle}>消息</Text>
         <View style={styles.jdMsgHeadActions}>
           {nav.loggedIn && nav.unread > 0 ? (

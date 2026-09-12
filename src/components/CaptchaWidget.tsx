@@ -56,8 +56,8 @@ type CapMessage = {
  * （官方在回帖编辑器上方挂 `cap-verification-widget`，提交必须带 `cap_token`）。
  * 传了 `config` 就用页面里那份 `data-cap-*`，否则回退去登录页读一次。
  *
- * 原生 WebView 不自己去拉脚本：widget.js / wasm / challenge 都走 App 的 OkHttp，
- * 镜像通道下才画得出来，登录按钮才解得开。
+ * 原生 WebView 不自己去拉脚本：widget.js / wasm / challenge 都走 App 的 OkHttp
+ * （DoH / HTTP/3），登录按钮才解得开。
  */
 function NativeCaptcha({ onToken, config }: { onToken: (value: string | null) => void; config?: CaptchaChallengeDto | null }) {
   const [html, setHtml] = useState<string | null>(null);

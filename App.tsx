@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, BackHandler, Platform, Pressable, Text, View } from 'react-native';
+import { AppState, BackHandler, Platform, Pressable, Text, View, Animated } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { guest, type Member, type Topic } from './data';
@@ -11,7 +11,7 @@ import { applyScheme, C } from './src/theme/palette';
 import { styles } from './src/theme/app-styles';
 import { api, mapUser } from './src/services/api';
 import { ApiError } from './src/services/client';
-import { getAccessToken, hydrateSession, markSignedOut } from './src/services/session';
+import { getAccessToken, hydrateSession, markSignedOut, sessionGeneration, sessionIsLive } from './src/services/session';
 import { pollAndNotify, rememberUnread, setPushHooks, startPushRuntime } from './src/services/push';
 import { sessionForToken, updateUpstreamUser } from './src/services/site-session';
 import { cacheClear, cacheDelete, preloadQueryCache } from './src/services/query-cache';
@@ -53,6 +53,19 @@ import { HelperScreen } from './src/screens/helper/HelperScreen';
 import { TopicDetailScreen } from './src/screens/TopicDetailScreen';
 import { UserScreen } from './src/screens/UserScreen';
 import { WalletScreen } from './src/screens/WalletScreen';
+
+function extraPageKey(extra: Extra | null): string {
+  if (!extra) return '';
+  if (extra.name === 'topic') return `topic:${extra.topic.id}`;
+  if (extra.name === 'user') return `user:${String(extra.member.id || extra.member.uid || extra.member.name)}`;
+  if (extra.name === 'dm') return `dm:${extra.userId}`;
+  if (extra.name === 'browser') return `browser:${extra.url}`;
+  if (extra.name === 'edit-comment') return `edit-comment:${extra.comment.id}`;
+  if (extra.name === 'edit-topic') return `edit-topic:${extra.topic.id}`;
+  if (extra.name === 'collection') return `collection:${extra.album.id}`;
+  if (extra.name === 'my') return `my:${extra.kind}`;
+  return extra.name;
+}
 
 /** 登录 / 注册 / 退出时清掉查询缓存与未读记忆，避免串号显示上一个账号的数据。 */
 function resetAccountCaches() {
@@ -111,6 +124,16 @@ function AppRoot() {
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const extra = stack[stack.length - 1] ?? null;
+  const extraToken = extraPageKey(extra);
+  const extraAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!extraToken) {
+      extraAnim.setValue(1);
+      return;
+    }
+    extraAnim.setValue(0);
+    Animated.timing(extraAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+  }, [extraToken, extraAnim]);
   const stackRef = useRef(stack);
   stackRef.current = stack;
   const forumRef = useRef(openForum);
@@ -198,7 +221,9 @@ function AppRoot() {
   }, []);
 
   const refreshMe = useCallback(async (balance?: number) => {
-    if (!getAccessToken()) return;
+    if (!sessionIsLive()) return;
+    const gen = sessionGeneration();
+    const stillThisSession = () => sessionGeneration() === gen && sessionIsLive();
     cacheDelete('identity:');
     cacheDelete('titles:');
     cacheDelete('notifs:');
@@ -214,6 +239,7 @@ function AppRoot() {
         api.points().catch(() => null),
         api.notificationUnread().catch(() => null),
       ]);
+      if (!stillThisSession()) return;
       setMe((prev) => {
         const mapped = mapUser(user);
         const nextPoints = (points && points.balance > 0)
@@ -240,6 +266,7 @@ function AppRoot() {
         updateUpstreamUser(token, { ...session.user, ...user, points: livePoints });
       }
     } catch (error) {
+      if (!stillThisSession()) return;
       // 上游会话真的失效了（两页都确认游客）：本地快照不能让人以为还登着
       if (error instanceof ApiError && error.status === 401) {
         if (!sessionForToken(getAccessToken())) setMe(guest);
@@ -439,7 +466,7 @@ function AppRoot() {
       api.points().then((result) => setCheckedIn(result.checkedIn)).catch(() => {});
     },
     me,
-    loggedIn: me.id !== '0',
+    loggedIn: me.id !== '0' && sessionIsLive(),
     sessionReady,
     signIn: async (input) => {
       const session = await api.login(input);
@@ -557,7 +584,7 @@ function AppRoot() {
   const openTopic = (topic: Topic, opts?: { latest?: boolean }) => setStack((current) => [...current, { name: 'topic', topic, latest: Boolean(opts?.latest) }]);
 
   let extraView: React.ReactNode = null;
-  if (extra?.name === 'topic') extraView = <TopicDetailScreen key={`${extra.topic.id}:${extra.replyId || extra.floor || ''}`} topic={extra.topic} latest={extra.latest} replyId={extra.replyId} floor={extra.floor} editedComment={extra.editedComment} onBack={() => setStack((current) => current.slice(0, -1))} />;
+  if (extra?.name === 'topic') extraView = <TopicDetailScreen key={extra.topic.id} topic={extra.topic} latest={extra.latest} replyId={extra.replyId} floor={extra.floor} editedComment={extra.editedComment} onBack={() => setStack((current) => current.slice(0, -1))} />;
   else if (extra?.name === 'edit-topic') extraView = (
     <ComposeScreen
       edit={extra.topic}
@@ -655,22 +682,33 @@ function AppRoot() {
           : <MessagesScreen />}
       </View>
       {extraView ? (
-        <View style={styles.flex} pointerEvents="auto" collapsable={false}>
+        <Animated.View
+          style={[
+            styles.flex,
+            {
+              opacity: extraAnim,
+              transform: [{
+                translateX: extraAnim.interpolate({ inputRange: [0, 1], outputRange: [28, 0] }),
+              }],
+            },
+          ]}
+          pointerEvents="auto"
+          collapsable={false}
+        >
           {extraView}
-        </View>
+        </Animated.View>
       ) : null}
     </View>
   );
 
   const showTab = !extra && tab !== 'compose';
-  const lightChrome = scheme === 'light' || (showTab && tab === 'profile');
+  const lightChrome = scheme === 'light';
   const tabBarPad = Math.max(insets.bottom, 8);
   const toastOffset = 16 + (showTab ? 52 + tabBarPad : 56 + insets.bottom);
   const app = (
     <NavCtx.Provider value={nav}>
       <View style={styles.safe}>
         <StatusBar style={lightChrome ? 'dark' : 'light'} translucent />
-        <View style={[styles.statusInset, { height: insets.top, backgroundColor: showTab && tab === 'profile' && scheme === 'dark' ? '#F3F3F3' : C.canvas }]} />
         <View style={styles.flex}>{content}</View>
         {showTab ? (
           <View style={[styles.tabbar, { paddingBottom: tabBarPad }]}>

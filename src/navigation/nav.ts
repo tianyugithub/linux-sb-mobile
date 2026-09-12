@@ -88,6 +88,11 @@ export function useAppInsets() {
   return { top, bottom };
 }
 
+/** 标题栏高度 48 + 状态栏，让渐变/头图铺到屏幕顶。 */
+export function chromePad(top: number, base = 48) {
+  return { height: base + top, paddingTop: top };
+}
+
 export function useAndroidBack(enabled: boolean, onBack: () => void) {
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;

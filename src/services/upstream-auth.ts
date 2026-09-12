@@ -1,7 +1,7 @@
 import type { CaptchaChallengeDto, SessionDto, UserDto } from '../types/api';
 import { requestId } from '../utils/time';
-import { LINUX_ORIGIN, hydrateUser, isLoginWall, parseCurrentUserId, parseFormErrorMessage } from './live';
-import { isLiveOrigin, liveUrl, viaAccess } from '../utils/linux-access';
+import { hydrateUser, isLoginWall, parseCurrentUserId, parseFormErrorMessage } from './live';
+import { isLiveOrigin, liveBase, liveUrl, viaAccess } from '../utils/linux-access';
 import { MockApiError, type MockRequest, type MockResponse } from './mock';
 import {
   cookiesForToken,
@@ -12,8 +12,8 @@ import {
   updateUpstreamCookies,
   updateUpstreamUser,
 } from './site-session';
-import { markSignedOut } from './session';
-import { decideSessionRefresh, hasBbsAuth, isChallengeHtml, keepAuthCookie, pageSessionLook } from './session-keep';
+import { markSignedOut, sessionAcceptsCookies, sessionGeneration } from './session';
+import { decideSessionRefresh, hasBbsAuth, isChallengeHtml, keepAuthCookie, pageSessionLook, shouldFollowThroughSignedOutWork } from './session-keep';
 import { decodeBase64Json } from '../utils/base64';
 import { isNativeApp, siteCredentials } from '../utils/runtime';
 
@@ -103,7 +103,7 @@ function browserHeaders(cookies?: string, referer = '/login'): Record<string, st
     Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'User-Agent': BROWSER_UA,
-    Referer: referer.startsWith('http') ? referer : `${LINUX_ORIGIN}${referer}`,
+    Referer: referer.startsWith('http') ? referer : `${liveBase()}${referer}`,
   };
   if (cookies) headers.Cookie = cookies;
   return headers;
@@ -198,7 +198,7 @@ async function postLogout(cookies: string, html: string): Promise<string> {
       method: 'POST',
       headers: {
         ...browserHeaders(jar, '/'),
-        Origin: LINUX_ORIGIN,
+        Origin: liveBase(),
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: encodeLoginForm({ _csrf: csrf }),
@@ -277,7 +277,7 @@ async function loginWithLinux(username: string, password: string, capToken: stri
     method: 'POST',
     headers: {
       ...browserHeaders(cookies),
-      Origin: LINUX_ORIGIN,
+      Origin: liveBase(),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: encodeLoginForm({
@@ -342,7 +342,7 @@ async function sendRegisterEmailCode(email: string): Promise<{ ok: true }> {
     method: 'POST',
     headers: {
       ...browserHeaders(cookies, '/register'),
-      Origin: LINUX_ORIGIN,
+      Origin: liveBase(),
       'Content-Type': 'application/x-www-form-urlencoded',
       'X-Requested-With': 'XMLHttpRequest',
       Accept: 'application/json,text/plain,*/*',
@@ -379,7 +379,7 @@ async function registerWithLinux(input: {
     method: 'POST',
     headers: {
       ...browserHeaders(cookies, '/register'),
-      Origin: LINUX_ORIGIN,
+      Origin: liveBase(),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: encodeLoginForm({
@@ -436,34 +436,55 @@ async function registerWithLinux(input: {
   }
 }
 
+function sessionProbePath(path: string): string {
+  const stamp = Date.now().toString(36);
+  return `${path}${path.includes('?') ? '&' : '?'}_=${stamp}`;
+}
+
+function sessionStillActive(token: string | null): boolean {
+  return sessionAcceptsCookies() && Boolean(sessionForToken(token));
+}
+
+function sessionGone(): MockApiError {
+  return new MockApiError(401, 'UNAUTHORIZED', '请先登录');
+}
+
 async function currentUser(token: string | null): Promise<UserDto> {
   const session = sessionForToken(token);
-  if (!session) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
+  if (!session) throw sessionGone();
   try {
     // 不要用首页判断登录：`/` 走镜像时经常被缓存成带 nav-mine-guest 的游客页。
-    const primary = await linuxGet('/mobile_menu', session.cookies);
+    // 查询串避开通道切换后 CDN 还拿着退出时的游客皮。
+    const primary = await linuxGet(sessionProbePath('/mobile_menu'), session.cookies);
+    if (!sessionStillActive(token)) throw sessionGone();
     const jar1 = keepAuthCookie(primary.cookies, session.cookies);
     const look1 = pageSessionLook(primary.html);
 
     const accept = async (jar: string, html: string): Promise<UserDto> => {
+      if (!sessionStillActive(token)) throw sessionGone();
       updateUpstreamCookies(token!, jar);
       try {
         const resolved = await resolveUser(jar, html);
+        if (!sessionStillActive(token)) throw sessionGone();
         updateUpstreamCookies(token!, keepAuthCookie(resolved.cookies, jar));
         updateUpstreamUser(token!, resolved.user);
         return resolved.user;
-      } catch {
+      } catch (error) {
+        if (error instanceof MockApiError && error.status === 401) throw error;
+        if (!sessionStillActive(token)) throw sessionGone();
         return session.user;
       }
     };
 
     if (look1 === 'logged-in') return accept(jar1, primary.html);
     if (look1 === 'unknown') {
+      if (!sessionStillActive(token)) throw sessionGone();
       if (hasBbsAuth(jar1)) updateUpstreamCookies(token!, jar1);
       return session.user;
     }
 
-    const confirm = await linuxGet('/topic_edit', jar1, '/mobile_menu');
+    const confirm = await linuxGet(sessionProbePath('/topic_edit'), jar1, '/mobile_menu');
+    if (!sessionStillActive(token)) throw sessionGone();
     const jar2 = keepAuthCookie(confirm.cookies, jar1);
     const look2 = pageSessionLook(confirm.html);
     if (look2 === 'logged-in') return accept(jar2, confirm.html);
@@ -477,7 +498,8 @@ async function currentUser(token: string | null): Promise<UserDto> {
     if (hasBbsAuth(jar2)) updateUpstreamCookies(token!, jar2);
     return session.user;
   } catch (error) {
-    if (error instanceof MockApiError && error.code === 'SESSION_EXPIRED') throw error;
+    if (error instanceof MockApiError && (error.code === 'SESSION_EXPIRED' || error.status === 401)) throw error;
+    if (!sessionStillActive(token)) throw sessionGone();
     return session.user;
   }
 }
@@ -651,10 +673,17 @@ async function dispatch(req: MockRequest): Promise<unknown> {
   if (method === 'POST' && path === '/auth/logout') {
     const cookies = cookiesForToken(token) ?? '';
     destroyUpstreamSession(token);
+    const gen = sessionGeneration();
     // 官网退出放后台：本地必须先变成游客，不能卡在 GET / + POST /logout 上。
+    // 切通道后这条请求可能很慢；若用户已经重新登录，绝不能再 POST /logout。
     void (async () => {
       try {
         const page = await linuxGet('/', cookies, '/', 'omit');
+        if (!shouldFollowThroughSignedOutWork({
+          startedGeneration: gen,
+          currentGeneration: sessionGeneration(),
+          signedOut: !sessionAcceptsCookies(),
+        })) return;
         await postLogout(page.cookies || cookies, page.html);
       } catch {
         /* still signed out locally */

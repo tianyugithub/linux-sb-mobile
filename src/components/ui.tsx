@@ -23,7 +23,7 @@ import { mediaUrl } from '../services/client';
 import { useRemoteMedia } from '../hooks/useRemoteMedia';
 import { decodeEntities, firstGlyph } from '../utils/entities';
 import { stampToneForKind, topicStampByType } from '../data/topic-stamp';
-import { useAndroidBack, useAppInsets, useNav } from '../navigation/nav';
+import { chromePad, useAndroidBack, useAppInsets, useNav } from '../navigation/nav';
 import { ContentSkeleton } from './ContentSkeleton';
 
 export function commentPreview(body: string) {
@@ -740,8 +740,12 @@ export function SettingsRow({
   disabled?: boolean;
 }) {
   return (
-    <Pressable disabled={disabled} onPress={onPress} style={styles.settingsRow}>
-      <View style={styles.settingsIcon}>
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.settingsRow, !subtitle && styles.settingsRowMid]}
+    >
+      <View style={[styles.settingsIcon, !subtitle && styles.settingsIconMid]}>
         <Icon name={icon} size={16} color={danger ? C.redBright : C.text} />
       </View>
       <View style={styles.settingsMain}>
@@ -758,8 +762,9 @@ export function SettingsRow({
 
 export function ScreenHeader({ title, onBack, right }: { title: string; onBack?: () => void; right?: React.ReactNode }) {
   const nav = useNav();
+  const insets = useAppInsets();
   return (
-    <View style={styles.detailHeader} collapsable={false}>
+    <View style={[styles.detailHeader, chromePad(insets.top)]} collapsable={false}>
       <View style={styles.headerSide} collapsable={false} pointerEvents="auto">
         <IconButton name="chevron-back" onPress={onBack ?? nav.close} />
       </View>

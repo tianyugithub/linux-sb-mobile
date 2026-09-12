@@ -25,7 +25,7 @@ export function setNotifyGuardEnabled(enabled: boolean) {
   Native?.setEnabled(enabled);
 }
 
-export function setAccessChannel(channel: 'mirror' | 'doh' | 'direct') {
+export function setAccessChannel(channel: 'doh' | 'direct') {
   if (Platform.OS !== 'android') return;
   Native?.setAccessChannel?.(channel);
 }

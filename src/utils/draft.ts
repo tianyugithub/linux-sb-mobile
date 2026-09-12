@@ -105,3 +105,116 @@ export function clearDraft(): void {
     /* ignore */
   }
 }
+
+const COMMENT_KEY = 'lsb.comment-drafts';
+const COMMENT_FILE = 'comment-drafts.json';
+const COMMENT_SILENT_MS = 10 * 60 * 1000;
+
+export type CommentDraft = {
+  topicId: string;
+  body: string;
+  replyToId?: string;
+  replyToName?: string;
+  replyToFloor?: string;
+  at?: number;
+};
+
+type CommentDraftStore = Record<string, CommentDraft>;
+
+let commentStore: CommentDraftStore = {};
+let commentHydrated = false;
+const commentVisitAt = new Map<string, number>();
+
+function commentFile(): File {
+  return new File(Paths.document, COMMENT_FILE);
+}
+
+function pruneComments(store: CommentDraftStore): CommentDraftStore {
+  const next: CommentDraftStore = {};
+  const now = Date.now();
+  for (const [id, draft] of Object.entries(store)) {
+    if (!draft?.body?.trim()) continue;
+    if (draft.at && now - draft.at > MAX_AGE) continue;
+    next[id] = draft;
+  }
+  return next;
+}
+
+function persistComments() {
+  const payload = JSON.stringify(commentStore);
+  if (Platform.OS === 'web') {
+    try {
+      sessionStorage.setItem(COMMENT_KEY, payload);
+    } catch {
+      /* ignore quota */
+    }
+    return;
+  }
+  try {
+    commentFile().write(payload);
+  } catch {
+    /* 磁盘写失败不影响编辑 */
+  }
+}
+
+async function hydrateComments(): Promise<void> {
+  if (commentHydrated) return;
+  commentHydrated = true;
+  try {
+    if (Platform.OS === 'web') {
+      const raw = sessionStorage.getItem(COMMENT_KEY);
+      commentStore = pruneComments(raw ? JSON.parse(raw) as CommentDraftStore : {});
+      return;
+    }
+    const target = commentFile();
+    if (!target.exists) {
+      commentStore = {};
+      return;
+    }
+    commentStore = pruneComments(JSON.parse(await target.text()) as CommentDraftStore);
+  } catch {
+    commentStore = {};
+  }
+}
+
+export async function preloadCommentDraft(topicId: string): Promise<CommentDraft | null> {
+  await hydrateComments();
+  return commentStore[topicId] ?? null;
+}
+
+export function saveCommentDraft(draft: CommentDraft): void {
+  const body = draft.body.trim();
+  if (!body) {
+    clearCommentDraft(draft.topicId);
+    return;
+  }
+  commentStore = {
+    ...commentStore,
+    [draft.topicId]: { ...draft, body, at: Date.now() },
+  };
+  persistComments();
+}
+
+export function clearCommentDraft(topicId: string): void {
+  if (!commentStore[topicId]) return;
+  const next = { ...commentStore };
+  delete next[topicId];
+  commentStore = next;
+  persistComments();
+}
+
+/** 主题页被其它子页盖住时记下时刻，回来就静默恢复，不再弹草稿提示。 */
+export function markCommentDraftVisit(topicId: string) {
+  commentVisitAt.set(topicId, Date.now());
+}
+
+/** 真正离开主题后清掉访问标记，下次进来要弹「继续编辑 / 放弃」。 */
+export function clearCommentDraftVisit(topicId: string) {
+  commentVisitAt.delete(topicId);
+}
+
+export function commentDraftVisitIsRecent(topicId: string): boolean {
+  const at = commentVisitAt.get(topicId);
+  return Boolean(at && Date.now() - at < COMMENT_SILENT_MS);
+}
+

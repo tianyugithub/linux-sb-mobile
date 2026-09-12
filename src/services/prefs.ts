@@ -60,7 +60,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   postingNoticeSkip: false,
   hotTopicsOpen: false,
   plugins: {},
-  accessChannel: 'mirror',
+  accessChannel: 'doh',
   h3First: true,
   scheme: 'dark',
   codeTheme: 'auto',

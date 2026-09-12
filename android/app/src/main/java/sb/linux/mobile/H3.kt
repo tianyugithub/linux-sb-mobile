@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicReference
  *   • `HostResolverRules` —— 把 `DohDns` 已经探好的 Cloudflare 真 IP 钉进 Cronet，
  *     不依赖会被污染的系统 DNS。
  *
- * 镜像通道不用它：镜像域名（lsb.miapi.cc）的 SNI 本来就不在封锁名单里。
+ * 旧镜像通道已下线，这里只服务官网域名。
  */
 object H3 {
   private const val TAG = "LinuxH3"
@@ -81,6 +81,15 @@ object H3 {
 
   fun isEnabled(): Boolean = enabled
 
+  /**
+   * 切 DoH / 直连时丢掉钉死旧 IP 的 Cronet 引擎。
+   * OkHttp 的 evict 不管 QUIC；不换引擎的话，退出时挂起的 H3 请求会在重新登录之后才落地。
+   */
+  @JvmStatic
+  fun onAccessChannelChanged() {
+    dropEngines()
+  }
+
   /** 给设置页看的：上一次请求实际走的传输。反射调用，必须是静态方法。 */
   @JvmStatic
   fun statusText(): String = appContext
@@ -91,12 +100,11 @@ object H3 {
   /**
    * DoH 与直连通道下、且是 linux.sb 系域名时才用 QUIC。
    *
-   * 直连仍是「干净直连」：路由与域名一概不动（不改写、不经镜像），这里只多给一层传输，
-   * 失败照旧回落到原来的 TLS 分片路径。镜像通道不接管 —— 它的 SNI 是镜像域名，本来就不被封。
+   * 直连仍是「干净直连」：路由与域名一概不动，这里只多给一层传输，
+   * 失败照旧回落到原来的 TLS 分片路径。
    */
   fun shouldUse(url: okhttp3.HttpUrl): Boolean {
     if (!enabled) return false
-    if (LinuxAccess.usingMirror()) return false
     val host = url.host.lowercase()
     return host == "linux.sb" || host.endsWith(".linux.sb")
   }
@@ -238,6 +246,7 @@ object H3 {
       }
     }
     engines.clear()
+    pinnedHosts.clear()
   }
 
   private fun record(transport: String) {

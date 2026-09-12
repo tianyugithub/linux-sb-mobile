@@ -43,6 +43,8 @@ async function nativeGet(key: string): Promise<string | null> {
 
 /** 每次退出加一，挡住「退出之后才完成的 secureSet」把会话写回来。 */
 let storeEpoch = 0;
+/** 登录 / 退出各加一，挡住上一轮退出还在飞的清 cookie、POST /logout。 */
+let sessionGen = 0;
 let signedOut = false;
 const inFlight = new Set<Promise<void>>();
 
@@ -120,10 +122,25 @@ export function sessionAcceptsCookies(): boolean {
   return !signedOut;
 }
 
+export function sessionGeneration(): number {
+  return sessionGen;
+}
+
+/** 本地还认这笔会话：没点退出，且内存里还有 access token。 */
+export function sessionIsLive(): boolean {
+  return !signedOut && Boolean(memory.token);
+}
+
+function bumpSessionGeneration() {
+  sessionGen += 1;
+  return sessionGen;
+}
+
 /** 界面已变游客时立刻挡住回写，不必等 clearSession 写盘结束。 */
 export function markSignedOut() {
   signedOut = true;
   lastCookies = '';
+  bumpSessionGeneration();
 }
 
 /**
@@ -263,6 +280,7 @@ export function getRefreshToken(): string | null {
 
 export function setSession(token: string, refreshToken: string): void {
   signedOut = false;
+  bumpSessionGeneration();
   memory.token = token;
   memory.refreshToken = refreshToken;
   memory.hydrated = true;
@@ -283,11 +301,13 @@ export async function clearSession(): Promise<void> {
     writeLocal(REFRESH_KEY, null);
     writeLocal(COOKIE_KEY, null);
     writeLocal(USER_KEY, null);
+    restoreSiteSession({ sessions: {}, refresh: {} });
     return;
   }
   nativeSet(TOKEN_KEY, null);
   nativeSet(REFRESH_KEY, null);
   nativeSet(COOKIE_KEY, null);
   nativeSet(USER_KEY, null);
+  restoreSiteSession({ sessions: {}, refresh: {} });
   await Promise.all([...inFlight]);
 }

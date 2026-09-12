@@ -31,6 +31,7 @@ import type {
   TopicRedPacketComposeDto,
 } from '../types/api';
 import { clearDraft, preloadDraft, saveDraft } from '../utils/draft';
+import { pickAndUploadAttachments } from '../services/attachments';
 
 function cloneLottery(src: TopicLotteryComposeDto): TopicLotteryComposeDto {
   return {
@@ -68,6 +69,10 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
   const [walletOpen, setWalletOpen] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [replyOrder, setReplyOrder] = useState('');
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [attachNames, setAttachNames] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState(false);
   const [noticeConfirmed, setNoticeConfirmed] = useState(false);
   const [skipNotice, setSkipNotice] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -75,6 +80,19 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
     ? composerQuery.data.forums.map((item) => item.name)
     : (selectedForum ? [selectedForum] : []);
   const editing = Boolean(edit);
+  /**
+   * 已发布的特殊帖（红包 / 抽奖 / 发卡）：官网编辑页把设置段改成只读，类型字段变成 hidden。
+   * 此时类型不能改、设置字段一个都不提交，只把页面那两段原文（当前设置 + 官方说明）显示出来。
+   */
+  const specialLock = composerQuery.data?.specialLock ?? null;
+  /** 编辑页的「回帖排序」：选项与当前值都取自页面（发帖页没有这一段）。 */
+  const replyOrderField = composerQuery.data?.replyOrder ?? null;
+  /** 「编辑主帖」计费说明 + 保存前确认原文（官网每次保存都弹）。 */
+  const editCost = composerQuery.data?.editCost ?? null;
+  /** 附件上传（发帖页、编辑页都有；页面上没有这一段说明没有上传权限）。 */
+  const attachment = composerQuery.data?.attachment ?? null;
+  /** 删除主帖的影响说明与官方确认原文。 */
+  const deleteLock = composerQuery.data?.deleteLock ?? null;
   /**
    * 发帖须知是否已满足：确认过、或在设置/弹窗里选了「不再提示」。
    *
@@ -111,6 +129,7 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
       setBody(data.body);
       if (data.forum) setSelectedForum(data.forum);
       setSpecialType(data.specialType);
+      setReplyOrder(data.replyOrder?.value ?? '');
       setLottery(data.lottery ? cloneLottery(data.lottery) : null);
       setCard(data.virtualCard ? cloneCard(data.virtualCard) : null);
       setRedPacket(data.redPacket ? { ...data.redPacket } : null);
@@ -139,6 +158,8 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
     body: (bodyOverride ?? body).trim(),
     forum: selectedForum,
     specialType,
+    // 回帖排序只在编辑页存在（页面给了才提交，缺省沿用官网默认）
+    ...(editing && replyOrderField && replyOrder ? { replyOrder } : {}),
     lottery: specialType === 'lottery' && lottery ? {
       originalType: lottery.originalType,
       drawAt: lottery.drawAt,
@@ -178,6 +199,94 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
     onUploadImageFile: (file, onProgress, target) => uploadPostImageFile(file, { toast: nav.toast, onProgress, silent: true, target }),
   });
 
+  const save = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      // 所见即所得模式下先把活文档拉平回 markdown，避免丢掉最后一次编辑。
+      const bodyText = await editor.flush();
+      if (edit) {
+        const saved = await api.updateTopic(edit.id, composePayload(bodyText));
+        onSaved?.(mapTopic(saved));
+        nav.toast('主题已保存');
+        return;
+      }
+      const created = await api.createTopic(composePayload(bodyText));
+      clearDraft();
+      onBack();
+      nav.open({ name: 'topic', topic: mapTopic(created) });
+      nav.toast('主题已发布');
+      nav.patchMe({ topicCount: nav.me.topicCount + 1 });
+      void nav.refreshMe();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : (editing ? '保存失败' : '发布失败，草稿已保留'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 保存入口：编辑页官网每次保存前都弹一次计费确认（`data-sb-limit-edit-time-edit-confirm`
+   * + 「是否确认保存？」），文案照抄，确认后才真的提交。
+   */
+  const requestSave = () => {
+    if (!noticeSatisfied || busy) return;
+    const confirmText = editing && editCost?.confirm ? `${editCost.confirm}是否确认保存？` : '';
+    if (!confirmText) {
+      void save();
+      return;
+    }
+    setDialog({
+      title: editCost?.title || '保存',
+      text: confirmText,
+      confirmLabel: '保存',
+      onConfirm: () => {
+        setDialog(null);
+        void save();
+      },
+    });
+  };
+
+  /** 附件：选完即传，成功后把官网返回的 markdown 一次插进正文（对应官网的「批量插入」）。 */
+  const addAttachments = async () => {
+    if (!attachment) return;
+    setAttachBusy(true);
+    try {
+      const uploaded = await pickAndUploadAttachments(attachment, { onError: (message) => nav.toast(message) });
+      if (!uploaded.length) return;
+      await editor.insert(uploaded.map((item) => item.markdown).join('\n'));
+      setAttachNames((prev) => [...prev, ...uploaded.map((item) => item.name)]);
+      nav.toast(`已插入 ${uploaded.length} 个附件`);
+    } finally {
+      setAttachBusy(false);
+    }
+  };
+
+  const removeTopic = () => {
+    if (!edit) return;
+    setDialog({
+      title: '删除主帖',
+      text: `${deleteLock?.note ?? ''}${deleteLock?.confirm || '删除后无法恢复。'}`,
+      confirmLabel: '删除',
+      danger: true,
+      onConfirm: async () => {
+        setDialog(null);
+        setDeleting(true);
+        try {
+          await api.deleteTopic(edit.id);
+          nav.toast('主题已删除');
+          // 编辑页是压在主题页上的：一起弹掉，免得退回一个已经不存在的主题
+          onBack();
+          nav.close();
+        } catch (err) {
+          setError(err instanceof ApiError ? err.message : '删除失败');
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
+  };
+
   if (!nav.loggedIn) {
     return (
       <View style={styles.flex}>
@@ -203,32 +312,7 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
       <ScreenHeader
         title={editing ? '编辑主题' : '发布主题'}
         onBack={onBack}
-        right={<PrimaryButton compact disabled={busy || composerQuery.loading || !noticeSatisfied} label={busy ? (editing ? '保存中' : '发布中') : composerQuery.loading ? '加载中' : (editing ? '保存' : '发布')} onPress={async () => {
-        if (!noticeSatisfied) return;
-        setBusy(true);
-        setError('');
-        try {
-          // 所见即所得模式下先把活文档拉平回 markdown，避免丢掉最后一次编辑。
-          const bodyText = await editor.flush();
-          if (edit) {
-            const saved = await api.updateTopic(edit.id, composePayload(bodyText));
-            onSaved?.(mapTopic(saved));
-            nav.toast('主题已保存');
-            return;
-          }
-          const created = await api.createTopic(composePayload(bodyText));
-          clearDraft();
-          onBack();
-          nav.open({ name: 'topic', topic: mapTopic(created) });
-          nav.toast('主题已发布');
-          nav.patchMe({ topicCount: nav.me.topicCount + 1 });
-          void nav.refreshMe();
-        } catch (err) {
-          setError(err instanceof ApiError ? err.message : (editing ? '保存失败' : '发布失败，草稿已保留'));
-        } finally {
-          setBusy(false);
-        }
-      }} />}
+        right={<PrimaryButton compact disabled={busy || composerQuery.loading || !noticeSatisfied} label={busy ? (editing ? '保存中' : '发布中') : composerQuery.loading ? '加载中' : (editing ? '保存' : '发布')} onPress={requestSave} />}
       />
       <ScrollView contentContainerStyle={styles.composeContent} keyboardShouldPersistTaps="always">
         <Text style={[styles.composeSectionTitle, styles.composeLeadTitle]}>版块</Text>
@@ -239,13 +323,22 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
             </Pressable>
           ))}
         </View>
-        <TopicTypePicker
-          specialType={specialType}
-          hasLottery={Boolean(lottery)}
-          hasCard={Boolean(card)}
-          hasRedPacket={Boolean(redPacket)}
-          onSelect={selectType}
-        />
+        {specialLock ? (
+          <>
+            <Text style={styles.composeSectionTitle}>{specialLock.title || '主题类型'}</Text>
+            <View style={styles.composePanel}>
+              <Text style={styles.composeFieldHint}>{specialLock.note}</Text>
+            </View>
+          </>
+        ) : (
+          <TopicTypePicker
+            specialType={specialType}
+            hasLottery={Boolean(lottery)}
+            hasCard={Boolean(card)}
+            hasRedPacket={Boolean(redPacket)}
+            onSelect={selectType}
+          />
+        )}
         {specialType === 'lottery' && lottery ? (
           <LotteryFields lottery={lottery} onChange={setLottery} onLink={(href) => openAppHref(nav, href, selectedForum || '综合')} />
         ) : null}
@@ -277,6 +370,76 @@ export function ComposeScreen({ onBack, edit, onSaved }: { onBack: () => void; e
           {editor.field}
           {editor.preview}
         </View>
+        {attachment ? (
+          <>
+            <Text style={styles.composeSectionTitle}>附件</Text>
+            <View style={styles.composePanel}>
+              <Text style={styles.composeFieldHint}>
+                {`可上传 ${attachment.accept}；单个不超过 ${attachment.maxMb}MB，上传后自动插入正文。`}
+              </Text>
+              <OutlineButton
+                compact
+                label={attachBusy ? '上传中' : (attachment.label || '上传附件')}
+                onPress={() => {
+                  if (attachBusy) return;
+                  void addAttachments();
+                }}
+              />
+              {attachNames.length ? (
+                <Text style={styles.composeFieldHint}>{`已插入：${attachNames.join('、')}`}</Text>
+              ) : null}
+            </View>
+          </>
+        ) : null}
+        {replyOrderField ? (
+          <>
+            <Text style={styles.composeSectionTitle}>{replyOrderField.label || '回帖排序'}</Text>
+            <View style={styles.composeChipWrap}>
+              {replyOrderField.options.map((option) => (
+                <Pressable
+                  key={option.value}
+                  onPress={() => setReplyOrder(option.value)}
+                  style={[styles.chip, replyOrder === option.value && styles.chipActive]}
+                >
+                  <Text numberOfLines={1} style={[styles.chipText, replyOrder === option.value && styles.chipTextActive]}>
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
+        ) : null}
+        {editCost ? (
+          <>
+            <Text style={styles.composeSectionTitle}>{editCost.title || '编辑主帖'}</Text>
+            <View style={styles.composePanel}>
+              <Text style={styles.composeFieldHint}>{editCost.note}</Text>
+              {editCost.rulesUrl ? (
+                <OutlineButton
+                  compact
+                  label="查看详细积分规则"
+                  onPress={() => openAppHref(nav, editCost.rulesUrl, selectedForum || '综合')}
+                />
+              ) : null}
+            </View>
+          </>
+        ) : null}
+        {editing && deleteLock ? (
+          <>
+            <Text style={styles.composeSectionTitle}>删除主帖</Text>
+            <View style={styles.composePanel}>
+              <Text style={styles.composeFieldHint}>{deleteLock.note || deleteLock.confirm}</Text>
+              <OutlineButton
+                compact
+                label={deleting ? '删除中' : '删除主帖'}
+                onPress={() => {
+                  if (deleting) return;
+                  removeTopic();
+                }}
+              />
+            </View>
+          </>
+        ) : null}
         {error ? <Text style={styles.authError}>{error}</Text> : null}
         {editing ? (
           <View style={styles.rules}><Text style={styles.rulesTitle}>发帖前请确认</Text><Text style={styles.rulesText}>遵守社区规则，不发布违法违规内容；涉及密钥、账号、兑换码时请先脱敏。</Text></View>
