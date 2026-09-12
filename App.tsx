@@ -5,7 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { guest, type Member, type Topic } from './data';
 import { InAppBrowser } from './src/components/InAppBrowser';
 import { Icon, ToastHost, ConfirmDialog, pickUserId, type DialogState } from './src/components/ui';
-import { NavCtx, openAppHref, useAppInsets, type Extra, type Nav } from './src/navigation/nav';
+import { NavCtx, openAppHref, stubMember, useAppInsets, type Extra, type Nav } from './src/navigation/nav';
 import { PrefsProvider, usePrefs } from './src/hooks/usePrefs';
 import { applyScheme, C } from './src/theme/palette';
 import { styles } from './src/theme/app-styles';
@@ -14,7 +14,7 @@ import { ApiError } from './src/services/client';
 import { getAccessToken, hydrateSession, markSignedOut, sessionGeneration, sessionIsLive } from './src/services/session';
 import { pollAndNotify, rememberUnread, setPushHooks, startPushRuntime } from './src/services/push';
 import { sessionForToken, updateUpstreamUser } from './src/services/site-session';
-import { cacheClear, cacheDelete, preloadQueryCache } from './src/services/query-cache';
+import { cacheClear, cacheDelete, cacheGet, preloadQueryCache } from './src/services/query-cache';
 import { resetOfficialUploadCapability } from './src/services/r2-config';
 import { bustUnreadCount } from './src/services/live';
 import { classifyAppHref, resolveAppHref } from './src/utils/links';
@@ -22,6 +22,8 @@ import { githubBrowseUrl } from './src/utils/github-access';
 import { viaAccess } from './src/utils/linux-access';
 import { checkForUpdate, updatePromptText } from './src/services/app-update';
 import { downloadAndInstallUpdate, rememberSkippedUpdate, wasUpdateSkipped } from './src/services/app-install';
+import { installCrashLog, takeCrashPrompt } from './src/services/crash-log';
+import { copyText } from './src/utils/share';
 import { hydrateTopicSeen } from './src/utils/topic-seen';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { CheckinScreen } from './src/screens/CheckinScreen';
@@ -54,7 +56,8 @@ import { TopicDetailScreen } from './src/screens/TopicDetailScreen';
 import { UserScreen } from './src/screens/UserScreen';
 import { WalletScreen } from './src/screens/WalletScreen';
 
-function extraPageKey(extra: Extra | null): string {
+function extraPageKey(extra: Extra | null | undefined): string {
+  if (!extra) return '';
   if (!extra) return '';
   if (extra.name === 'topic') return `topic:${extra.topic.id}`;
   if (extra.name === 'user') return `user:${String(extra.member.id || extra.member.uid || extra.member.name)}`;
@@ -117,7 +120,9 @@ function AppRoot() {
   const [unread, setUnread] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [updateDialog, setUpdateDialog] = useState<DialogState | null>(null);
+  const [crashDialog, setCrashDialog] = useState<DialogState | null>(null);
   const updateTagRef = useRef('');
+  const crashPromptedRef = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 启动流程（本地会话恢复）是否已完成：完成前不接受通知带来的页面跳转，保证冷启动先落首页。 */
   const bootedRef = useRef(false);
@@ -126,16 +131,66 @@ function AppRoot() {
   const extra = stack[stack.length - 1] ?? null;
   const extraToken = extraPageKey(extra);
   const extraAnim = useRef(new Animated.Value(1)).current;
+  const closingRef = useRef(false);
+  const closeGen = useRef(0);
+  const prevStackLen = useRef(0);
+  const prevExtraToken = useRef('');
+  const stackRef = useRef(stack);
+  stackRef.current = stack;
+  const closeStack = useCallback(() => {
+    if (closingRef.current) return;
+    if (!stackRef.current.length) return;
+    closingRef.current = true;
+    const gen = ++closeGen.current;
+    extraAnim.stopAnimation();
+    extraAnim.setValue(1);
+    Animated.timing(extraAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
+      if (gen !== closeGen.current) return;
+      extraAnim.setValue(1);
+      closingRef.current = false;
+      if (finished) setStack((current) => current.slice(0, -1));
+    });
+  }, [extraAnim]);
+  const resetStack = useCallback(() => {
+    closeGen.current += 1;
+    closingRef.current = false;
+    extraAnim.stopAnimation();
+    extraAnim.setValue(1);
+    setStack([]);
+  }, [extraAnim]);
+  const commitStack = useCallback((update: (current: Extra[]) => Extra[]) => {
+    setStack((current) => {
+      const next = update(current);
+      if (next === current) return current;
+      const grew = next.length > current.length;
+      const replaced = next.length === current.length && next.length > 0
+        && extraPageKey(next[next.length - 1]) !== extraPageKey(current[current.length - 1]);
+      if (grew || replaced) {
+        closeGen.current += 1;
+        closingRef.current = false;
+        extraAnim.stopAnimation();
+        extraAnim.setValue(0);
+      }
+      return next;
+    });
+  }, [extraAnim]);
   useEffect(() => {
-    if (!extraToken) {
+    const len = stack.length;
+    const grew = len > prevStackLen.current;
+    const shrunk = len < prevStackLen.current;
+    const replaced = !grew && !shrunk && len > 0 && extraToken !== prevExtraToken.current;
+    prevStackLen.current = len;
+    prevExtraToken.current = extraToken;
+    if (closingRef.current) return;
+    if (!len) {
       extraAnim.setValue(1);
       return;
     }
-    extraAnim.setValue(0);
-    Animated.timing(extraAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-  }, [extraToken, extraAnim]);
-  const stackRef = useRef(stack);
-  stackRef.current = stack;
+    if (grew || replaced) {
+      extraAnim.setValue(0);
+      Animated.timing(extraAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+    }
+  }, [extraToken, extraAnim, stack.length]);
   const forumRef = useRef(openForum);
   forumRef.current = openForum;
   const lastBackAt = useRef(0);
@@ -149,10 +204,26 @@ function AppRoot() {
   showToastRef.current = showToast;
 
   useEffect(() => {
+    installCrashLog();
+    const log = takeCrashPrompt();
+    if (!log) return;
+    crashPromptedRef.current = true;
+    setCrashDialog({
+      title: '上次异常退出',
+      text: '不必进设置。点复制，把内容发给开发。App 打不开时，到系统「下载」里找 LINUX-SB-崩溃日志.txt。',
+      confirmLabel: '复制',
+      onConfirm: async () => {
+        await copyText(log);
+        showToastRef.current('已复制');
+      },
+    });
+  }, []);
+
+  useEffect(() => {
     if (Platform.OS === 'web') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (stackRef.current.length) {
-        setStack((current) => current.slice(0, -1));
+        closeStack();
         return true;
       }
       if (tabRef.current === 'forums' && forumRef.current) {
@@ -171,7 +242,7 @@ function AppRoot() {
       return true;
     });
     return () => sub.remove();
-  }, []);
+  }, [closeStack]);
 
   useEffect(() => {
     /**
@@ -183,7 +254,7 @@ function AppRoot() {
     setPushHooks({
       openMessages: () => {
         if (!pushNavAllowed()) return;
-        setStack([]);
+        resetStack();
         setTab('messages');
       },
       // 私信通知直接进对应会话，拿不到 id 时退回消息列表。
@@ -191,15 +262,15 @@ function AppRoot() {
         if (!pushNavAllowed()) return;
         const key = pickUserId(userId);
         if (!key) {
-          setStack([]);
+          resetStack();
           setTab('messages');
           return;
         }
-        setStack([{ name: 'dm', userId: key, title }]);
+        commitStack(() => [{ name: 'dm', userId: key, title }]);
       },
       openTopic: (topicId, replyId, title) => {
         if (!pushNavAllowed()) return;
-        setStack([{
+        commitStack(() => [{
           name: 'topic',
           topic: {
             id: topicId,
@@ -218,7 +289,7 @@ function AppRoot() {
       viewingMessages: () => tabRef.current === 'messages' && stackRef.current.length === 0,
     });
     return () => setPushHooks(null);
-  }, []);
+  }, [commitStack, resetStack]);
 
   const refreshMe = useCallback(async (balance?: number) => {
     if (!sessionIsLive()) return;
@@ -357,6 +428,7 @@ function AppRoot() {
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
+        if (crashPromptedRef.current) return;
         const next = await checkForUpdate();
         if (cancelled || next.status !== 'available' || !next.apkUrl) return;
         if (await wasUpdateSkipped(next.latest)) return;
@@ -386,7 +458,7 @@ function AppRoot() {
 
   const nav = useMemo<Nav>(() => {
     const next: Nav = {
-    open: (page) => setStack((current) => {
+    open: (page) => commitStack((current) => {
       const last = current[current.length - 1];
       if (last?.name === 'menu' && page.name !== 'menu') return [...current.slice(0, -1), page];
       if ((last?.name === 'login' || last?.name === 'register') && (page.name === 'login' || page.name === 'register')) {
@@ -401,41 +473,41 @@ function AppRoot() {
       if (last?.name === 'wallet' && page.name === 'wallet') return current;
       return [...current, page];
     }),
-    close: () => setStack((current) => current.slice(0, -1)),
+    close: () => closeStack(),
     openForum: (forum) => {
-      setStack([]);
+      resetStack();
       setTab('forums');
       setOpenForum(forum);
     },
     openTab: (key) => {
-      setStack([]);
+      resetStack();
       setTab(key);
     },
     openHomeSort: (sort) => {
       setHomeJump({ sort, nonce: Date.now() });
-      setStack([]);
+      resetStack();
       setTab('home');
       setOpenForum(null);
     },
-    openUser: (id) => {
-      const key = pickUserId(id);
+    openUser: (id, preview) => {
+      const key = pickUserId(id, preview?.uid);
       if (!key) {
         showToast('无法打开该用户');
         return;
       }
-      api.user(key).then((dto) => {
-        setStack((current) => {
-          const last = current[current.length - 1];
-          if (last?.name === 'user' && (last.member.id === dto.id || last.member.uid === dto.uid)) return current;
-          return [...current, { name: 'user', member: mapUser(dto) }];
-        });
-      }).catch((err) => {
-        showToast(err instanceof ApiError ? err.message : '无法打开用户主页');
+      const cached = cacheGet<Member>(`user:${key}`);
+      const member = cached ?? stubMember(key, preview);
+      commitStack((current) => {
+        const last = current[current.length - 1];
+        if (last?.name === 'user' && (last.member.id === member.id || last.member.uid === member.uid || last.member.id === key)) {
+          return current;
+        }
+        return [...current, { name: 'user', member }];
       });
     },
     openWeb: (url, title) => {
       const abs = viaAccess(githubBrowseUrl(resolveAppHref(url) ?? url));
-      setStack((current) => {
+      commitStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;
         return [...current, { name: 'browser', url: abs, title }];
@@ -448,7 +520,7 @@ function AppRoot() {
         return;
       }
       const abs = viaAccess(githubBrowseUrl(action.type === 'browser' ? action.url : (resolveAppHref(url) ?? url)));
-      setStack((current) => {
+      commitStack((current) => {
         const last = current[current.length - 1];
         if (last?.name === 'browser' && last.url === abs) return current;
         return [...current, { name: 'browser', url: abs, title }];
@@ -457,7 +529,7 @@ function AppRoot() {
     completeAuth: (member) => {
       setMe(member);
       resetAccountCaches();
-      setStack([]);
+      resetStack();
       setTab('profile');
       api.notificationUnread().then((result) => {
         setUnread(result.unread);
@@ -472,7 +544,7 @@ function AppRoot() {
       const session = await api.login(input);
       setMe(mapUser(session.user));
       resetAccountCaches();
-      setStack([]);
+      resetStack();
       setTab('profile');
       /*
        * 登录成功后必须给一句反馈：以前这里只是静默切到「我的」，
@@ -498,7 +570,7 @@ function AppRoot() {
       const session = await api.register(input);
       setMe(mapUser(session.user));
       resetAccountCaches();
-      setStack([]);
+      resetStack();
       setTab('profile');
       showToast(`注册成功，已自动登录 ${toastName(session.user.name)}`.trim());
       try {
@@ -522,7 +594,7 @@ function AppRoot() {
       setCheckedIn(false);
       setUnread(0);
       void rememberUnread(0);
-      setStack([]);
+      resetStack();
       // 与登录对称：退出也要有反馈，否则界面只是「变回访客」，用户不确定退没退成
       showToast('已退出登录');
       try {
@@ -572,132 +644,164 @@ function AppRoot() {
      * 消息页 / 私信页于是永远显示「同步中…」+ 骨架，游客等不到「登录后查看」。
      * 登录用户碰巧不出问题：refreshMe 会改 me，顺带把整个 memo 重算了一遍，所以只坑游客。
      */
-  }, [me, checkedIn, unread, refreshMe, sessionReady]);
+  }, [me, checkedIn, unread, refreshMe, sessionReady, commitStack, closeStack, resetStack]);
 
   const switchTab = (key: typeof tab) => {
-    setStack([]);
+    resetStack();
     if (key === 'forums' && tab === 'forums') setOpenForum(null);
     if (key !== 'forums') setOpenForum(null);
     setTab(key);
   };
 
-  const openTopic = (topic: Topic, opts?: { latest?: boolean }) => setStack((current) => [...current, { name: 'topic', topic, latest: Boolean(opts?.latest) }]);
+  const openTopic = (topic: Topic, opts?: { latest?: boolean }) => {
+    commitStack((current) => [...current, { name: 'topic', topic, latest: Boolean(opts?.latest) }]);
+  };
 
-  let extraView: React.ReactNode = null;
-  if (extra?.name === 'topic') extraView = <TopicDetailScreen key={extra.topic.id} topic={extra.topic} latest={extra.latest} replyId={extra.replyId} floor={extra.floor} editedComment={extra.editedComment} onBack={() => setStack((current) => current.slice(0, -1))} />;
-  else if (extra?.name === 'edit-topic') extraView = (
-    <ComposeScreen
-      edit={extra.topic}
-      onBack={() => setStack((current) => current.slice(0, -1))}
-      onSaved={(topic) => {
-        cacheDelete(`topic:${topic.id}:`);
-        setStack((current) => {
-          const withoutEdit = current.slice(0, -1);
-          const last = withoutEdit[withoutEdit.length - 1];
-          if (last?.name === 'topic') {
-            return [...withoutEdit.slice(0, -1), { ...last, topic: { ...last.topic, ...topic } }];
-          }
-          return withoutEdit;
-        });
-      }}
-    />
-  );
-  else if (extra?.name === 'edit-comment') extraView = (
-    <EditCommentScreen
-      topic={extra.topic}
-      comment={extra.comment}
-      onBack={() => setStack((current) => current.slice(0, -1))}
-      onSaved={(saved) => {
-        cacheDelete(`comments:${extra.topic.id}:`);
-        cacheDelete(`topic:${extra.topic.id}:`);
-        setStack((current) => {
-          const withoutEdit = current.slice(0, -1);
-          const last = withoutEdit[withoutEdit.length - 1];
-          if (last?.name === 'topic') {
-            return [...withoutEdit.slice(0, -1), { ...last, editedComment: saved }];
-          }
-          return withoutEdit;
-        });
-      }}
-    />
-  );
-  else if (extra?.name === 'login') extraView = <AuthScreen mode="login" />;
-  else if (extra?.name === 'register') extraView = <AuthScreen mode="register" />;
-  else if (extra?.name === 'search') extraView = <SearchScreen />;
-  else if (extra?.name === 'leaderboard') extraView = <LeaderboardScreen />;
-  else if (extra?.name === 'invite') extraView = <InviteScreen />;
-  else if (extra?.name === 'wallet') extraView = <WalletScreen />;
-  else if (extra?.name === 'titles') extraView = <TitlesScreen initialTab={extra.tab ?? '称号抽取'} />;
-  else if (extra?.name === 'collections') extraView = <CollectionsScreen initialTab={extra.tab === 'mine' ? '我的淘帖' : '大家的淘帖'} />;
-  else if (extra?.name === 'collection') extraView = <CollectionDetail album={extra.album} />;
-  else if (extra?.name === 'identity') extraView = <IdentityScreen />;
-  else if (extra?.name === 'checkin') extraView = <CheckinScreen />;
-  else if (extra?.name === 'settings') extraView = <SettingsScreen />;
-  else if (extra?.name === 'about') extraView = <AboutScreen />;
-  else if (extra?.name === 'account') extraView = <AccountScreen />;
-  else if (extra?.name === 'code-settings') extraView = <CodeSettingsScreen />;
-  else if (extra?.name === 'image-host') extraView = <ImageHostSettingsScreen />;
-  else if (extra?.name === 'topic-filter') extraView = <TopicFilterScreen />;
-  else if (extra?.name === 'plugins') extraView = <PluginListScreen />;
-  else if (extra?.name === 'helper') extraView = <HelperScreen />;
-  else if (extra?.name === 'my') extraView = <MyListScreen kind={extra.kind} />;
-  else if (extra?.name === 'user') extraView = <UserScreen key={extra.member.id} member={extra.member} />;
-  else if (extra?.name === 'menu') extraView = <MenuScreen />;
-  else if (extra?.name === 'inbox') extraView = <InboxScreen />;
-  else if (extra?.name === 'dm') extraView = <DirectMessageScreen userId={extra.userId} title={extra.title} />;
-  else if (extra?.name === 'report') extraView = (
-    <ReportScreen
-      targetType={extra.targetType}
-      targetId={extra.targetId}
-      targetUser={extra.targetUser}
-      topicTitle={extra.topicTitle}
-    />
-  );
-  else if (extra?.name === 'browser')       extraView = (
+  const renderStackPage = (page: Extra): React.ReactNode => {
+    if (page.name === 'topic') {
+      return (
+        <TopicDetailScreen
+          topic={page.topic}
+          latest={page.latest}
+          replyId={page.replyId}
+          floor={page.floor}
+          editedComment={page.editedComment}
+          onBack={closeStack}
+        />
+      );
+    }
+    if (page.name === 'edit-topic') {
+      return (
+        <ComposeScreen
+          edit={page.topic}
+          onBack={closeStack}
+          onSaved={(topic) => {
+            cacheDelete(`topic:${topic.id}:`);
+            setStack((current) => {
+              const withoutEdit = current.slice(0, -1);
+              const last = withoutEdit[withoutEdit.length - 1];
+              if (last?.name === 'topic') {
+                return [...withoutEdit.slice(0, -1), { ...last, topic: { ...last.topic, ...topic } }];
+              }
+              return withoutEdit;
+            });
+          }}
+        />
+      );
+    }
+    if (page.name === 'edit-comment') {
+      return (
+        <EditCommentScreen
+          topic={page.topic}
+          comment={page.comment}
+          onBack={closeStack}
+          onSaved={(saved) => {
+            cacheDelete(`comments:${page.topic.id}:`);
+            cacheDelete(`topic:${page.topic.id}:`);
+            setStack((current) => {
+              const withoutEdit = current.slice(0, -1);
+              const last = withoutEdit[withoutEdit.length - 1];
+              if (last?.name === 'topic') {
+                return [...withoutEdit.slice(0, -1), { ...last, editedComment: saved }];
+              }
+              return withoutEdit;
+            });
+          }}
+        />
+      );
+    }
+    if (page.name === 'login') return <AuthScreen mode="login" />;
+    if (page.name === 'register') return <AuthScreen mode="register" />;
+    if (page.name === 'search') return <SearchScreen />;
+    if (page.name === 'leaderboard') return <LeaderboardScreen />;
+    if (page.name === 'invite') return <InviteScreen />;
+    if (page.name === 'wallet') return <WalletScreen />;
+    if (page.name === 'titles') return <TitlesScreen initialTab={page.tab ?? '称号抽取'} />;
+    if (page.name === 'collections') return <CollectionsScreen initialTab={page.tab === 'mine' ? '我的淘帖' : '大家的淘帖'} />;
+    if (page.name === 'collection') return <CollectionDetail album={page.album} />;
+    if (page.name === 'identity') return <IdentityScreen />;
+    if (page.name === 'checkin') return <CheckinScreen />;
+    if (page.name === 'settings') return <SettingsScreen />;
+    if (page.name === 'about') return <AboutScreen />;
+    if (page.name === 'account') return <AccountScreen />;
+    if (page.name === 'code-settings') return <CodeSettingsScreen />;
+    if (page.name === 'image-host') return <ImageHostSettingsScreen />;
+    if (page.name === 'topic-filter') return <TopicFilterScreen />;
+    if (page.name === 'plugins') return <PluginListScreen />;
+    if (page.name === 'helper') return <HelperScreen />;
+    if (page.name === 'my') return <MyListScreen kind={page.kind} />;
+    if (page.name === 'user') return <UserScreen member={page.member} />;
+    if (page.name === 'menu') return <MenuScreen />;
+    if (page.name === 'inbox') return <InboxScreen />;
+    if (page.name === 'dm') return <DirectMessageScreen userId={page.userId} title={page.title} />;
+    if (page.name === 'report') {
+      return (
+        <ReportScreen
+          targetType={page.targetType}
+          targetId={page.targetId}
+          targetUser={page.targetUser}
+          topicTitle={page.topicTitle}
+        />
+      );
+    }
+    if (page.name === 'browser') {
+      return (
         <InAppBrowser
-          url={extra.url}
-          title={extra.title}
+          url={page.url}
+          title={page.title}
           onClose={() => {
-            setStack((current) => current.slice(0, -1));
+            closeStack();
             if (getAccessToken()) void refreshMe();
           }}
           onToast={showToast}
           onAppHref={(href) => openAppHref(nav, href)}
         />
       );
+    }
+    return null;
+  };
 
+  const hasStack = stack.length > 0;
   const content = (
     <View style={styles.flex}>
       <View
-        style={extraView ? styles.hiddenScreen : styles.flex}
+        style={styles.flex}
         collapsable={false}
-        pointerEvents={extraView ? 'none' : 'auto'}
-        accessibilityElementsHidden={Boolean(extraView)}
-        importantForAccessibility={extraView ? 'no-hide-descendants' : 'auto'}
+        pointerEvents={hasStack ? 'none' : 'auto'}
+        accessibilityElementsHidden={hasStack}
+        importantForAccessibility={hasStack ? 'no-hide-descendants' : 'auto'}
       >
-        {tab === 'home' ? <HomeScreen jumpSort={homeJump} onJumpApplied={() => setHomeJump(null)} onTopic={openTopic} onSearch={() => setStack([{ name: 'search' }])} onProfile={() => setTab('profile')} />
+        {tab === 'home' ? <HomeScreen jumpSort={homeJump} onJumpApplied={() => setHomeJump(null)} onTopic={openTopic} onSearch={() => commitStack(() => [{ name: 'search' }])} onProfile={() => setTab('profile')} />
           : tab === 'compose' ? <ComposeScreen onBack={() => setTab('home')} />
           : tab === 'profile' ? <ProfileScreen />
-          : tab === 'forums' ? (openForum ? <ForumFeed forum={openForum} onTopic={openTopic} onBack={() => setOpenForum(null)} /> : <ForumsScreen onOpenForum={setOpenForum} onSearch={() => setStack([{ name: 'search' }])} />)
+          : tab === 'forums' ? (openForum ? <ForumFeed forum={openForum} onTopic={openTopic} onBack={() => setOpenForum(null)} /> : <ForumsScreen onOpenForum={setOpenForum} onSearch={() => commitStack(() => [{ name: 'search' }])} />)
           : <MessagesScreen />}
       </View>
-      {extraView ? (
-        <Animated.View
-          style={[
-            styles.flex,
-            {
-              opacity: extraAnim,
-              transform: [{
-                translateX: extraAnim.interpolate({ inputRange: [0, 1], outputRange: [28, 0] }),
-              }],
-            },
-          ]}
-          pointerEvents="auto"
-          collapsable={false}
-        >
-          {extraView}
-        </Animated.View>
-      ) : null}
+      {stack.map((page, index) => {
+        const isTop = index === stack.length - 1;
+        const isPrev = index === stack.length - 2;
+        return (
+          <Animated.View
+            key={`${index}:${extraPageKey(page)}`}
+            pointerEvents={isTop ? 'auto' : 'none'}
+            accessibilityElementsHidden={!isTop}
+            importantForAccessibility={isTop ? 'auto' : 'no-hide-descendants'}
+            collapsable={false}
+            style={[
+              styles.stackLayer,
+              !isTop && !isPrev ? styles.hiddenScreen : null,
+              isTop ? {
+                opacity: extraAnim,
+                transform: [{
+                  translateX: extraAnim.interpolate({ inputRange: [0, 1], outputRange: [28, 0] }),
+                }],
+              } : null,
+            ]}
+          >
+            {renderStackPage(page)}
+          </Animated.View>
+        );
+      })}
     </View>
   );
 
@@ -740,6 +844,10 @@ function AppRoot() {
           <View style={{ height: insets.bottom, backgroundColor: C.canvas }} />
         ) : null}
         <ToastHost message={toast} offset={toastOffset} />
+        <ConfirmDialog
+          dialog={crashDialog}
+          onClose={() => setCrashDialog(null)}
+        />
         <ConfirmDialog
           dialog={updateDialog}
           onClose={() => {

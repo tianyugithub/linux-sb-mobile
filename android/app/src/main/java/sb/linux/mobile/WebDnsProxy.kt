@@ -20,8 +20,8 @@ import kotlin.concurrent.thread
  * TLS 仍由 WebView 和官网直接完成（不做中间人）。
  * DoH / 直连时把第一条 ClientHello 拆成两个 TLS 记录再送出。
  *
- * 代理只包 linux.sb。GitHub / Google 授权页必须走系统网络（用户 VPN），
- * 否则会被钉到香港节点或先去 gh-proxy，挂了 VPN 反而打不开。
+ * GitHub / Google 授权页必须走系统网络（用户 VPN），所以这两家域名走旁路，
+ * 不进本机 CONNECT。不用「反转旁路」：vivo 的 WebView 在启动时开这个会直接闪退。
  */
 object WebDnsProxy {
   fun start(dns: Dns) {
@@ -43,30 +43,27 @@ object WebDnsProxy {
         }
       }
     }
-    attachWebView(port)
+    // Application.onCreate 里立刻碰 WebView 工厂，vivo / OriginOS 会直接把进程打死。
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+      attachWebView(port)
+    }
   }
 
   private fun attachWebView(port: Int) {
-    if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) return
-    val builder = ProxyConfig.Builder()
-      .addProxyRule("127.0.0.1:$port")
-    if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)) {
-      // 反转旁路：名单里的才进代理。127.0.0.1 不能进名单，否则会绕回自己。
-      builder.addBypassRule("linux.sb")
-      builder.addBypassRule("*.linux.sb")
-      builder.setReverseBypassEnabled(true)
-    } else {
-      builder.addBypassRule("127.0.0.1")
-      builder.addBypassRule("localhost")
-      OAUTH_DIRECT.forEach { builder.addBypassRule(it) }
-    }
     try {
+      if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) return
+      val builder = ProxyConfig.Builder()
+        .addProxyRule("127.0.0.1:$port")
+        .addBypassRule("127.0.0.1")
+        .addBypassRule("localhost")
+      OAUTH_DIRECT.forEach { builder.addBypassRule(it) }
       ProxyController.getInstance().setProxyOverride(
         builder.build(),
         Executors.newSingleThreadExecutor(),
       ) {}
-    } catch (_: Exception) {
-      /* 旧 WebView 没有代理覆盖时，内置浏览器仍走系统 DNS */
+    } catch (error: Throwable) {
+      android.util.Log.w("lsb-web-proxy", "WebView 代理覆盖跳过：${error.message}")
+      CrashLog.caught("webview-proxy", error)
     }
   }
 

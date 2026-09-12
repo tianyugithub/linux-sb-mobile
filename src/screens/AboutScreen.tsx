@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, Platform, ScrollView, Text, View } from 'react-native';
 import {
   ABOUT_DATA,
@@ -15,6 +15,8 @@ import {
 } from '../data/app-info';
 import { downloadAndInstallUpdate } from '../services/app-install';
 import { checkForUpdate, updatePromptText, type UpdateResult } from '../services/app-update';
+import { copyText } from '../utils/share';
+import { readCrashLog } from 'linux-notify';
 import { styles } from '../theme/app-styles';
 import { useNav } from '../navigation/nav';
 import {
@@ -36,6 +38,11 @@ export function AboutScreen() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateResult | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [crashLog, setCrashLog] = useState('');
+
+  useEffect(() => {
+    setCrashLog(readCrashLog());
+  }, []);
 
   /** 检查更新：读项目仓库里的最新版本，和当前版本比。 */
   const runCheck = async () => {
@@ -128,6 +135,29 @@ export function AboutScreen() {
           disabled={checking}
           chevron
           onPress={() => { void runCheck(); }}
+        />
+        <SettingsRow
+          icon="bug-outline"
+          title="崩溃日志"
+          subtitle="只存在本机，不上传。首页会弹；打不开就去系统「下载」拿 LINUX-SB-崩溃日志.txt。"
+          value={crashLog ? '有记录' : '无'}
+          chevron
+          onPress={() => {
+            if (!crashLog) {
+              nav.toast('还没有崩溃记录');
+              return;
+            }
+            const preview = crashLog.length > 280 ? `${crashLog.slice(0, 280)}…` : crashLog;
+            setDialog({
+              title: '崩溃日志',
+              text: `${preview}\n\n复制后发给开发即可。记录里没有登录 cookie。`,
+              confirmLabel: '复制',
+              onConfirm: async () => {
+                await copyText(crashLog);
+                nav.toast('已复制');
+              },
+            });
+          }}
         />
 
         <Text style={styles.profileSectionTitle}>说明</Text>

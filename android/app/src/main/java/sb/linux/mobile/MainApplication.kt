@@ -41,6 +41,7 @@ class MainApplication : Application(), ReactApplication {
     get() = ReactNativeHostWrapper.createReactHost(applicationContext, reactNativeHost)
 
   override fun onCreate() {
+    CrashLog.install(this)
     TlsFrag.install()
     LinuxAccess.init(this)
     H3.init(this)
@@ -54,8 +55,9 @@ class MainApplication : Application(), ReactApplication {
     } catch (_: Exception) {
       /* RN 以后改了字段名也没关系，factory 仍在 */
     }
-    WebDnsProxy.start(dns)
     super.onCreate()
+    WebDnsProxy.start(dns)
+    CrashLog.markNativeStarted()
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
     } catch (e: IllegalArgumentException) {

@@ -32,7 +32,7 @@ export function TopicRow({ topic, onPress, onUnread }: { topic: Topic; onPress: 
       nav.toast('无法打开该用户');
       return;
     }
-    nav.openUser(userId);
+    nav.openUser(userId, { name: topic.author, avatarUrl: topic.avatarUrl, accent: topic.accent });
   };
   const tags = topicTagList(topic);
   const left = tags.filter((tag) => tag.type === 'pinned');
@@ -41,7 +41,7 @@ export function TopicRow({ topic, onPress, onUnread }: { topic: Topic; onPress: 
   const lastReplierId = pickUserId(topic.lastReplierId);
   const openLastReplier = () => {
     if (!lastReplierId) return;
-    nav.openUser(lastReplierId);
+    nav.openUser(lastReplierId, { name: topic.lastReplier });
   };
   const openListed = () => {
     if (unread) (onUnread ?? onPress)();

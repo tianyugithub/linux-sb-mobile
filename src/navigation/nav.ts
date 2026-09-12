@@ -4,8 +4,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Album, Member, Topic } from '../../data';
 import type { CommentDto } from '../types/api';
 import type { TitleTab } from '../screens/TitlesCenter';
-import { C } from '../theme/palette';
 import { classifyAppHref } from '../utils/links';
+import { stubTopic, type UserPreview } from './stack';
+
+export type { UserPreview } from './stack';
+export { stackMotion, stubMember, stubTopic } from './stack';
 
 export type Extra =
   | { name: 'topic'; topic: Topic; latest?: boolean; editedComment?: CommentDto; replyId?: string; floor?: string }
@@ -47,7 +50,7 @@ export type Nav = {
   openForum: (forum: string) => void;
   openTab: (tab: 'home' | 'forums' | 'compose' | 'messages' | 'profile') => void;
   openHomeSort: (sort: string) => void;
-  openUser: (id: string) => void;
+  openUser: (id: string, preview?: UserPreview) => void;
   openBrowser: (url: string, title?: string) => void;
   /**
    * 强制用内置浏览器打开：站内地址也不转成 App 页面。
@@ -104,16 +107,6 @@ export function useAndroidBack(enabled: boolean, onBack: () => void) {
     });
     return () => sub.remove();
   }, [enabled]);
-}
-
-/**
- * 只有 id / 标题的占位主题。
- *
- * 详情页拿到 id 后会重新抓完整数据，所以从「链接」或「每日热帖」这种
- * 只知道 id + 标题的地方进详情页时，用它拼一个占位对象即可。
- */
-export function stubTopic(id: string, title: string, replies = 0, forum = '综合'): Topic {
-  return { id, title, author: '', forum, time: '', replies, avatar: '?', accent: C.blue };
 }
 
 export function openAppHref(nav: Nav, href: string, forum = '综合') {

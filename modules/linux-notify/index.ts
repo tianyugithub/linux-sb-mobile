@@ -6,6 +6,11 @@ type LinuxNotifyNative = {
   setAccessChannel?(channel: string): void;
   setH3Enabled?(enabled: boolean): void;
   h3Status?(): string;
+  crashLog?(): string;
+  clearCrashLog?(): void;
+  markCrashLogAlive?(): void;
+  recordJsCrash?(text: string): void;
+  hasNewCrashReport?(): boolean;
   isEnabled(): boolean;
   syncSession(cookie: string, unread: number, baselined: boolean): void;
   start(): boolean;
@@ -39,6 +44,31 @@ export function setH3Enabled(enabled: boolean) {
 export function h3Status(): string {
   if (Platform.OS !== 'android') return '';
   return Native?.h3Status?.() ?? '';
+}
+
+export function readCrashLog(): string {
+  if (Platform.OS !== 'android') return '';
+  return Native?.crashLog?.() ?? '';
+}
+
+export function clearCrashLog() {
+  if (Platform.OS !== 'android') return;
+  Native?.clearCrashLog?.();
+}
+
+export function markCrashLogAlive() {
+  if (Platform.OS !== 'android') return;
+  Native?.markCrashLogAlive?.();
+}
+
+export function recordJsCrash(text: string) {
+  if (Platform.OS !== 'android') return;
+  Native?.recordJsCrash?.(text);
+}
+
+export function hasNewCrashReport(): boolean {
+  if (Platform.OS !== 'android') return false;
+  return Native?.hasNewCrashReport?.() ?? false;
 }
 
 export function syncNotifySession(cookie: string, unread = -1, baselined = true) {

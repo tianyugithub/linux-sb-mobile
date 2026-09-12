@@ -1,6 +1,6 @@
 {
   "name": "linux-sb-mobile",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "main": "expo/AppEntry.js",
   "scripts": {
@@ -30,6 +30,7 @@
     "check:helper": "npx tsx scripts/check-helper.ts",
     "check:code": "npx tsx scripts/check-code.ts",
     "check:links": "node scripts/run-stubbed.mjs scripts/check-links.ts",
+    "check:nav": "node scripts/run-stubbed.mjs scripts/check-nav.ts",
     "postinstall": "node scripts/patch-rn-webview.mjs",
     "check:store": "node scripts/run-stubbed.mjs scripts/check-store.ts",
     "check:session": "node scripts/run-stubbed.mjs scripts/check-session.ts",

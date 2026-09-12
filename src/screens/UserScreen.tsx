@@ -37,6 +37,14 @@ export function UserScreen({ member }: { member: Member }) {
     if (!uid) return;
     void copyText(uid).then(() => nav.toast('已复制 UID'));
   };
+  if (profile.error && !profile.data) {
+    return (
+      <View style={styles.flex}>
+        <ScreenHeader title={current.name || '用户'} />
+        <StatusBlock error={profile.error} onRetry={profile.reload} />
+      </View>
+    );
+  }
   return (
     <View style={styles.flex}>
       <ScreenHeader

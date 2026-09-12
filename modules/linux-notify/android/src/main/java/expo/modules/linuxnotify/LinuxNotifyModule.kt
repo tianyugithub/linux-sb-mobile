@@ -52,6 +52,46 @@ class LinuxNotifyModule : Module() {
       }
     }
 
+    Function("crashLog") {
+      try {
+        Class.forName("sb.linux.mobile.CrashLog").getMethod("readText").invoke(null) as? String ?: ""
+      } catch (_: Exception) {
+        ""
+      }
+    }
+
+    Function("clearCrashLog") {
+      try {
+        Class.forName("sb.linux.mobile.CrashLog").getMethod("clearAll").invoke(null)
+      } catch (_: Exception) {
+      }
+      null
+    }
+
+    Function("hasNewCrashReport") {
+      try {
+        Class.forName("sb.linux.mobile.CrashLog").getMethod("hasNewReport").invoke(null) as? Boolean ?: false
+      } catch (_: Exception) {
+        false
+      }
+    }
+
+    Function("markCrashLogAlive") {
+      try {
+        Class.forName("sb.linux.mobile.CrashLog").getMethod("markJsReady").invoke(null)
+      } catch (_: Exception) {
+      }
+      null
+    }
+
+    Function("recordJsCrash") { text: String ->
+      try {
+        Class.forName("sb.linux.mobile.CrashLog").getMethod("appendJs", String::class.java).invoke(null, text)
+      } catch (_: Exception) {
+      }
+      null
+    }
+
     Function("setAccessChannel") { channel: String ->
       val context = appCtx() ?: return@Function null
       try {

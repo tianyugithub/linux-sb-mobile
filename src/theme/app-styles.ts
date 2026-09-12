@@ -10,6 +10,7 @@ export function createAppStyles(C: Palette) {
   flex: { flex: 1, backgroundColor: C.canvas, minHeight: 0 },
   hiddenScreen: { display: 'none' },
   overlayScreen: { flex: 1, backgroundColor: C.canvas, minHeight: 0 },
+  stackLayer: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: C.canvas },
   flexGrow: { flex: 1, minWidth: 0 },
   primaryBtn: { height: 36, paddingHorizontal: 16, borderRadius: 18, backgroundColor: C.red, alignItems: 'center', justifyContent: 'center' },
   primaryBtnCompact: { height: 32, paddingHorizontal: 14, borderRadius: 16 },

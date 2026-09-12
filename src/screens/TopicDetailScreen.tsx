@@ -1975,7 +1975,25 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
       nav.toast('无法打开该用户');
       return;
     }
-    nav.openUser(id);
+    nav.openUser(id, {
+      name: item.authorName,
+      uid: item.uid,
+      avatarUrl: item.avatar.includes('/') ? item.avatar : undefined,
+      accent: item.accent,
+    });
+  };
+  const openTopicAuthor = () => {
+    const id = pickUserId(dto?.authorId, current.authorId, author?.id, author?.uid);
+    if (!id) {
+      nav.toast('无法打开该用户');
+      return;
+    }
+    nav.openUser(id, {
+      name: current.author,
+      uid: authorUid,
+      avatarUrl: current.avatarUrl,
+      accent: current.accent,
+    });
   };
   const commentReplyHint = (kid: CommentDto, root: CommentDto) => {
     const parentFloor = kid.parentFloor ? String(kid.parentFloor) : '';
@@ -2196,26 +2214,12 @@ export function TopicDetailScreen({ topic, onBack, latest, editedComment, replyI
           ))}
         </View>
         <View style={styles.authorLine}>
-          <Pressable onPress={() => {
-            const id = pickUserId(dto?.authorId, current.authorId, author?.id, author?.uid);
-            if (!id) {
-              nav.toast('无法打开该用户');
-              return;
-            }
-            nav.openUser(id);
-          }} hitSlop={6} style={({ pressed }) => [styles.avatarHit, pressed && styles.pressFade]}>
+          <Pressable onPress={openTopicAuthor} hitSlop={6} style={({ pressed }) => [styles.avatarHit, pressed && styles.pressFade]}>
             <UserAvatar name={current.author} url={current.avatarUrl} accent={current.accent} size={38} online={Boolean(dto?.online ?? current.online)} />
           </Pressable>
           <View style={styles.authorCopy}>
             <View style={styles.authorNameRow}>
-              <Pressable onPress={() => {
-                const id = pickUserId(dto?.authorId, current.authorId, author?.id, author?.uid);
-                if (!id) {
-                  nav.toast('无法打开该用户');
-                  return;
-                }
-                nav.openUser(id);
-              }} hitSlop={6} style={({ pressed }) => pressed && styles.pressFade}>
+              <Pressable onPress={openTopicAuthor} hitSlop={6} style={({ pressed }) => pressed && styles.pressFade}>
                 <Text style={styles.authorName}>{current.author}</Text>
               </Pressable>
               <TitleBadges
