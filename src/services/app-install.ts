@@ -48,9 +48,22 @@ function apkFileName(version: string): string {
   return `linux-sb-${tag.replace(/[^\w.-]/g, '_')}.apk`;
 }
 
+export function formatDownloadHint(received: number, total: number): string {
+  const mb = (n: number) => Math.max(0, n) / (1024 * 1024);
+  if (total > 0) {
+    const pct = Math.max(0, Math.min(99, Math.floor((received / total) * 100)));
+    return `正在下载 ${pct}%（${mb(received).toFixed(1)} / ${mb(total).toFixed(1)} MB）`;
+  }
+  return `正在下载 ${mb(received).toFixed(1)} MB…`;
+}
+
 export async function downloadAndInstallUpdate(
   next: Extract<UpdateResult, { status: 'available' }>,
   onToast: (message: string) => void,
+  options?: {
+    onProgress?: (hint: string) => void;
+    onBeforeInstall?: () => void;
+  },
 ): Promise<void> {
   if (Platform.OS !== 'android') {
     throw new Error('仅安卓可直接安装更新');
@@ -63,19 +76,33 @@ export async function downloadAndInstallUpdate(
     openInstallPermission();
     throw new Error('NEED_PERMISSION');
   }
-  onToast('正在下载安装包…');
+  const report = (hint: string) => {
+    options?.onProgress?.(hint);
+    onToast(hint);
+  };
+  report('正在连接下载源…');
   const dest = new File(Paths.cache, apkFileName(next.latest));
+  const urls = githubAccessUrls(next.apkUrl);
   let lastError = '安装包下载失败';
-  for (const url of githubAccessUrls(next.apkUrl)) {
+  let path = '';
+  for (let i = 0; i < urls.length; i += 1) {
     try {
-      const path = await downloadApk(url, dest.uri);
-      await installApk(path);
-      return;
+      if (i > 0) report(`这个源没下完，换第 ${i + 1} 个…`);
+      path = await downloadApk(urls[i], dest.uri, (received, total) => {
+        options?.onProgress?.(formatDownloadHint(received, total));
+      });
+      break;
     } catch (err) {
       lastError = err instanceof Error ? err.message : lastError;
+      path = '';
     }
   }
-  throw new Error(lastError);
+  if (!path) throw new Error(lastError);
+  report('正在打开系统安装界面…');
+  options?.onBeforeInstall?.();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await installApk(path);
+  onToast('已打开安装界面，按系统提示完成安装');
 }
 
 export const NEED_PERMISSION = 'NEED_PERMISSION';

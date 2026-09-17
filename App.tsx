@@ -424,7 +424,12 @@ function AppRoot() {
           confirmLabel: '下载安装',
           onConfirm: async () => {
             try {
-              await downloadAndInstallUpdate(next, (message) => showToastRef.current(message));
+              await downloadAndInstallUpdate(next, (message) => showToastRef.current(message), {
+                onProgress: (hint) => {
+                  setUpdateDialog((cur) => (cur ? { ...cur, busyLabel: hint } : cur));
+                },
+                onBeforeInstall: () => setUpdateDialog(null),
+              });
             } catch (err) {
               const message = err instanceof Error ? err.message : '下载失败';
               if (message !== 'NEED_PERMISSION') showToastRef.current(message);

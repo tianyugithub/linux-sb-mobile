@@ -5,6 +5,7 @@
  * 这里守住三件事：主页地址能解析出 owner/repo、版本比较符合直觉、以及当前版本与仓库一致。
  */
 import { APP_VERSION, PROJECT_URL } from '../src/data/app-info';
+import { formatDownloadHint } from '../src/services/app-install';
 import { compareVersions, formatApkSize, parseRepo, parseVersion, pickReleaseApk, updatePromptText } from '../src/services/app-update';
 import { githubAccessUrls, githubBrowseUrl, isGithubUrl } from '../src/utils/github-access';
 import pkg from '../package.json';
@@ -50,6 +51,9 @@ check(
 check('没有 APK 时返回空', pickReleaseApk([{ name: 'notes.md', browser_download_url: 'https://x' }]) === null);
 check('体积格式化', formatApkSize(28_311_457) === '27M', formatApkSize(28_311_457));
 check('空体积不显示', formatApkSize(0) === '');
+check('下载进度有百分比', formatDownloadHint(17_500_000, 35_000_000).includes('50%'));
+check('下载进度带体积', formatDownloadHint(17_500_000, 35_000_000).includes('16.7 / 33.4 MB'));
+check('未知总长只显示已下', formatDownloadHint(5_242_880, 0) === '正在下载 5.0 MB…');
 check(
   '更新文案会写下载安装',
   /下载安装包/.test(updatePromptText({

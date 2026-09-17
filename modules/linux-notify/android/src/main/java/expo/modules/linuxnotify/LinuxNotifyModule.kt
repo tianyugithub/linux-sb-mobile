@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.facebook.react.modules.network.OkHttpClientProvider
@@ -22,6 +23,7 @@ import java.util.concurrent.TimeUnit
 class LinuxNotifyModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("LinuxNotify")
+    Events("onApkDownloadProgress")
 
     Function("setEnabled") { enabled: Boolean ->
       val context = appCtx() ?: return@Function null
@@ -193,7 +195,7 @@ class LinuxNotifyModule : Module() {
         val client = try {
           OkHttpClientProvider.getOkHttpClient().newBuilder()
             .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
@@ -201,14 +203,46 @@ class LinuxNotifyModule : Module() {
         } catch (_: Exception) {
           OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .build()
         }
-        val request = Request.Builder().url(url.trim()).build()
-        client.newCall(request).execute().use { response ->
-          if (!response.isSuccessful) throw Exception("下载失败 HTTP ${response.code}")
-          val body = response.body ?: throw Exception("安装包为空")
-          dest.outputStream().use { output -> body.byteStream().copyTo(output) }
+        val request = Request.Builder()
+          .url(url.trim())
+          .header("Accept", "*/*")
+          .build()
+        try {
+          client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("下载失败 HTTP ${response.code}")
+            val body = response.body ?: throw Exception("安装包为空")
+            val total = body.contentLength()
+            var received = 0L
+            var lastEmit = 0L
+            dest.outputStream().use { output ->
+              body.byteStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                  val n = input.read(buf)
+                  if (n < 0) break
+                  output.write(buf, 0, n)
+                  received += n
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastEmit >= 200L || (total > 0 && received == total)) {
+                    lastEmit = now
+                    sendEvent(
+                      "onApkDownloadProgress",
+                      mapOf(
+                        "received" to received,
+                        "total" to total,
+                      ),
+                    )
+                  }
+                }
+              }
+            }
+          }
+        } catch (err: Exception) {
+          if (dest.exists()) dest.delete()
+          throw err
         }
         if (!dest.exists() || dest.length() < 1024L * 1024L) {
           dest.delete()

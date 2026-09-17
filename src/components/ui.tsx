@@ -78,6 +78,8 @@ export type DialogState = {
   title: string;
   text: string;
   confirmLabel?: string;
+  /** 异步确认进行中时按钮/正文展示的进度，例如「正在下载 12%」。 */
+  busyLabel?: string;
   danger?: boolean;
   rulesUrl?: string;
   onConfirm: () => void | Promise<void>;
@@ -533,7 +535,7 @@ export function ConfirmDialog({ dialog, onClose }: { dialog: DialogState | null;
   const [busy, setBusy] = useState(false);
   useAndroidBack(Boolean(dialog) && !busy, onClose);
   useEffect(() => {
-    setBusy(false);
+    if (!dialog) setBusy(false);
   }, [dialog]);
   if (!dialog) return null;
   return (
@@ -558,6 +560,9 @@ export function ConfirmDialog({ dialog, onClose }: { dialog: DialogState | null;
           </View>
           <View style={styles.confirmBody}>
             <Text style={[styles.confirmMessage, { color: C.text }]}>{dialog.text}</Text>
+            {busy && dialog.busyLabel ? (
+              <Text style={[styles.confirmMessage, { color: C.muted }]}>{dialog.busyLabel}</Text>
+            ) : null}
             {dialog.rulesUrl ? (
               <Pressable onPress={() => nav.openWeb(dialog.rulesUrl!, '积分规则')} hitSlop={6}>
                 <Text style={styles.confirmRules}>查看详细积分规则 →</Text>
@@ -566,7 +571,7 @@ export function ConfirmDialog({ dialog, onClose }: { dialog: DialogState | null;
             <View style={styles.confirmActions}>
               <GhostButton label="取消" onPress={busy ? undefined : onClose} />
               <PrimaryButton
-                label={busy ? '处理中' : (dialog.confirmLabel ?? '确定')}
+                label={busy ? (dialog.busyLabel || '下载中') : (dialog.confirmLabel ?? '确定')}
                 disabled={busy}
                 onPress={async () => {
                   setBusy(true);

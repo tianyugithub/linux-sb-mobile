@@ -119,10 +119,33 @@ export function openInstallPermission(): boolean {
   return Native?.openInstallPermission() ?? false;
 }
 
-export async function downloadApk(url: string, destPath: string): Promise<string> {
+type ApkProgressEvent = { received?: number; total?: number };
+
+function listenApkProgress(onProgress: (received: number, total: number) => void): () => void {
+  const emitter = Native as unknown as {
+    addListener?: (event: string, listener: (payload: ApkProgressEvent) => void) => { remove(): void };
+  };
+  const sub = emitter?.addListener?.('onApkDownloadProgress', (payload) => {
+    onProgress(Number(payload?.received) || 0, Number(payload?.total) || 0);
+  });
+  return () => {
+    try { sub?.remove(); } catch { /* ignore */ }
+  };
+}
+
+export async function downloadApk(
+  url: string,
+  destPath: string,
+  onProgress?: (received: number, total: number) => void,
+): Promise<string> {
   if (Platform.OS !== 'android') throw new Error('仅安卓可直接安装更新');
   if (!Native?.downloadApk) throw new Error('当前安装包不支持应用内更新');
-  return Native.downloadApk(url, destPath);
+  const stop = onProgress ? listenApkProgress(onProgress) : () => {};
+  try {
+    return await Native.downloadApk(url, destPath);
+  } finally {
+    stop();
+  }
 }
 
 export async function installApk(path: string): Promise<void> {

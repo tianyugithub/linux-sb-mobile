@@ -67,7 +67,12 @@ export function AboutScreen() {
               return;
             }
             try {
-              await downloadAndInstallUpdate(next, nav.toast);
+              await downloadAndInstallUpdate(next, nav.toast, {
+                onProgress: (hint) => {
+                  setDialog((cur) => (cur ? { ...cur, busyLabel: hint } : cur));
+                },
+                onBeforeInstall: () => setDialog(null),
+              });
             } catch (err) {
               const message = err instanceof Error ? err.message : '下载失败';
               if (message !== 'NEED_PERMISSION') nav.toast(message);
