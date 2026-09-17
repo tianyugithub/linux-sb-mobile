@@ -59,6 +59,23 @@ object H3 {
   private val engines = HashMap<String, CronetEngine>()
   /** host → 当前钉住的地址，失败时拿去 DohDns 标记，下次换一个。 */
   private val pinnedHosts = HashMap<String, java.net.InetAddress>()
+
+  /*
+   * 引擎的「在用请求数」。
+   *
+   * `CronetEngine.shutdown()` 在还有请求没结束时调用是**未定义行为** —— 实测会命中
+   * Chromium 内部的致命 CHECK，在 `CronetNet` 原生线程上 SIGTRAP，Java 层抓不住，
+   * 整个 App 直接闪退（tombstone 里 libcronet 偏移固定 0x3e8848，且是间歇性的）。
+   *
+   * 触发路径：JS 侧 `prefs.applyAccessChannel()` 会在启动时调 `setChannel` →
+   * `H3.onAccessChannelChanged()` → `dropEngines()`；而那一刻首屏请求往往正在飞，
+   * 于是 shutdown 与在途请求相撞。间歇性正好对应「请求有没有刚好在飞」。
+   *
+   * 所以改成引用计数：还有请求在跑就先记账，等最后一个请求结束再真正 shutdown。
+   */
+  private val activeRequests = HashMap<CronetEngine, Int>()
+  private val pendingShutdown = HashSet<CronetEngine>()
+
   private val executor = Executors.newFixedThreadPool(4) { runnable ->
     Thread(runnable, "LinuxH3-io").apply { isDaemon = true }
   }
@@ -165,23 +182,63 @@ object H3 {
       }
     }
     val urlRequest = builder.build()
-    urlRequest.start()
-    val deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS
-    while (System.currentTimeMillis() < deadline) {
-      if (latch.await(200, TimeUnit.MILLISECONDS)) break
-      if (cancelled()) {
+    retain(engine)
+    try {
+      urlRequest.start()
+      val deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS
+      while (System.currentTimeMillis() < deadline) {
+        if (latch.await(200, TimeUnit.MILLISECONDS)) break
+        if (cancelled()) {
+          urlRequest.cancel()
+          throw IOException("H3 已取消")
+        }
+      }
+      if (latch.count > 0) {
         urlRequest.cancel()
-        throw IOException("H3 已取消")
+        throw IOException("H3 超时")
+      }
+      failure.get()?.let { error ->
+        throw if (error is IOException) error else IOException("H3 失败：${error.message}", error)
+      }
+      return done.get() ?: throw IOException("H3 无响应")
+    } finally {
+      release(engine)
+    }
+  }
+
+  /**
+   * 记一笔「这个引擎有请求在跑」，并把引擎从待关闭集合里撤下来。
+   *
+   * 与 [release] 配对，保证 `shutdown()` 只在没有在途请求时发生。
+   */
+  private fun retain(engine: CronetEngine) {
+    synchronized(engines) {
+      activeRequests[engine] = (activeRequests[engine] ?: 0) + 1
+      pendingShutdown.remove(engine)
+    }
+  }
+
+  private fun release(engine: CronetEngine) {
+    val toShutdown = synchronized(engines) {
+      val left = (activeRequests[engine] ?: 1) - 1
+      if (left <= 0) {
+        activeRequests.remove(engine)
+        // 只有在「已经被要求关闭」时才真正关，否则引擎继续复用。
+        if (pendingShutdown.remove(engine)) engine else null
+      } else {
+        activeRequests[engine] = left
+        null
       }
     }
-    if (latch.count > 0) {
-      urlRequest.cancel()
-      throw IOException("H3 超时")
+    if (toShutdown != null) shutdownQuietly(toShutdown)
+  }
+
+  private fun shutdownQuietly(engine: CronetEngine) {
+    try {
+      engine.shutdown()
+    } catch (_: Exception) {
+      /* ignore */
     }
-    failure.get()?.let { error ->
-      throw if (error is IOException) error else IOException("H3 失败：${error.message}", error)
-    }
-    return done.get() ?: throw IOException("H3 无响应")
   }
 
   private fun engineFor(ctx: Context, host: String): CronetEngine = synchronized(engines) {
@@ -192,21 +249,32 @@ object H3 {
         Log.i(TAG, "取 $host 的真 IP 失败：${error.message}")
         null
       }
-      if (address != null) pinnedHosts[host] = address
       val ip = address?.hostAddress
+      /*
+       * 只有真正能当主机用的地址才钉进 Cronet。
+       *
+       * 踩过的坑：DohDns 曾把 linux.sb 解成 `188.114.96.0`（段基址/网络地址），
+       * Cloudflare Anycast 在段内任何 IP 都应答 443，所以探测放行了它；
+       * 而 `MAP linux.sb 188.114.96.0` 会让 Cronet 在 CronetNet 线程上致命
+       * CHECK → SIGTRAP，整个 App 闪退。这里再挡一道：拿不到合法地址就退回系统 DNS，
+       * 让 Cronet 自己解析，而不是带着一个坏 IP 去 build()。
+       */
+      val usable = if (address != null && !DohDns.isUnusableHost(address)) address else null
+      if (usable != null) pinnedHosts[host] = usable else pinnedHosts.remove(host)
+      val pinned = usable?.hostAddress
       val builder = ExperimentalCronetEngine.Builder(ctx)
         .enableHttp2(true)
         .enableQuic(true)
         .addQuicHint(host, 443, 443)
         .enableHttpCache(CronetEngine.Builder.HTTP_CACHE_DISABLED, 0)
-        .setUserAgent(BROWSER_UA)
-      if (ip != null && ip.contains('.')) {
+        .setUserAgent(LinuxUa.VALUE)
+      if (pinned != null && pinned.contains('.')) {
         builder.setExperimentalOptions(
-          """{"HostResolverRules":{"host_resolver_rules":"MAP $host $ip"}}"""
+          """{"HostResolverRules":{"host_resolver_rules":"MAP $host $pinned"}}"""
         )
       }
       val engine = builder.build()
-      Log.i(TAG, "engine: $host -> ${ip ?: "系统 DNS"}")
+      Log.i(TAG, "engine: $host -> ${pinned ?: "系统 DNS"}${if (address != null && usable == null) "（丢掉不可用地址 ${address.hostAddress}）" else ""}")
       engine
     }
   }
@@ -220,14 +288,9 @@ object H3 {
   fun markFailed(request: okhttp3.Request) {
     val host = request.url.host.lowercase()
     val address = synchronized(engines) {
-      engines.remove(host)?.let { engine ->
-        try {
-          engine.shutdown()
-        } catch (_: Exception) {
-          /* ignore */
-        }
-      }
-      pinnedHosts.remove(host)
+      val pinned = pinnedHosts.remove(host)
+      engines.remove(host)?.let { retire(it) }
+      pinned
     }
     try {
       DohDns.instance.markFailed(host, address)
@@ -238,15 +301,23 @@ object H3 {
   }
 
   private fun dropEngines() = synchronized(engines) {
-    engines.values.forEach { engine ->
-      try {
-        engine.shutdown()
-      } catch (_: Exception) {
-        /* ignore */
-      }
-    }
+    engines.values.forEach { retire(it) }
     engines.clear()
     pinnedHosts.clear()
+  }
+
+  /**
+   * 把引擎「退役」：没有在途请求就立刻关，有就等最后一个请求跑完再关。
+   *
+   * 直接把 `shutdown()` 用在有请求在飞的引擎上会让 Cronet 在 CronetNet 线程命中
+   * 致命 CHECK（SIGTRAP，App 闪退）。见 [activeRequests] 的说明。
+   */
+  private fun retire(engine: CronetEngine) {
+    if ((activeRequests[engine] ?: 0) > 0) {
+      pendingShutdown.add(engine)
+    } else {
+      shutdownQuietly(engine)
+    }
   }
 
   private fun record(transport: String) {
@@ -393,6 +464,3 @@ object H3 {
     }
   }
 }
-
-private const val BROWSER_UA =
-  "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"

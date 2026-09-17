@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { mediaUrl } from '../services/client';
 import { imageKey } from '../utils/article';
 import { useRemoteMedia } from '../hooks/useRemoteMedia';
+import { SvgBlockImage, isSvgUri } from './ui';
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
@@ -55,7 +56,10 @@ function GalleryImage({
   onDismiss: () => void;
   onTap: () => void;
 }) {
-  const uri = useRemoteMedia(displayUri(src));
+  const raw = displayUri(src);
+  // RN 的 Image 解码不了 SVG：svg 走 SvgBlockImage（与正文同一套 AST 缓存）。
+  const svgUri = isSvgUri(src) || isSvgUri(raw) ? raw : null;
+  const uri = useRemoteMedia(svgUri ? undefined : raw);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const scale = useRef(new Animated.Value(1)).current;
@@ -114,7 +118,7 @@ function GalleryImage({
   useEffect(() => {
     setFailed(false);
     setLoaded(false);
-  }, [uri, src]);
+  }, [uri, src, svgUri]);
 
   useEffect(() => {
     if (!active) reset();
@@ -237,9 +241,18 @@ function GalleryImage({
   return (
     <View style={{ width, height }} {...responder.panHandlers}>
       <Pressable onPress={handleTap} style={[styles.page, { width, height }]}>
-        {!loaded || !uri ? <ActivityIndicator color="#fff" style={styles.spinner} /> : null}
+        {!loaded || !(svgUri ?? uri) ? <ActivityIndicator color="#fff" style={styles.spinner} /> : null}
         <Animated.View style={{ opacity, transform: [{ translateX: tx }, { translateY: ty }, { scale }] }}>
-          {uri ? (
+          {svgUri ? (
+            <SvgBlockImage
+              uri={svgUri}
+              style={{ width, height }}
+              onLoad={() => setLoaded(true)}
+              onError={() => {
+                setFailed(true);
+              }}
+            />
+          ) : uri ? (
             <Image
               source={{ uri }}
               style={{ width, height }}
@@ -257,10 +270,14 @@ function GalleryImage({
 }
 
 function GalleryThumb({ src, on, onPress }: { src: string; on: boolean; onPress: () => void }) {
-  const uri = useRemoteMedia(displayUri(src));
+  const raw = displayUri(src);
+  const svgUri = isSvgUri(src) || isSvgUri(raw) ? raw : null;
+  const uri = useRemoteMedia(svgUri ? undefined : raw);
   return (
     <Pressable onPress={onPress}>
-      {uri ? (
+      {svgUri ? (
+        <SvgBlockImage uri={svgUri} style={[styles.thumb, on && styles.thumbOn]} />
+      ) : uri ? (
         <Image source={{ uri }} style={[styles.thumb, on && styles.thumbOn]} />
       ) : (
         <View style={[styles.thumb, on && styles.thumbOn]} />

@@ -11,8 +11,10 @@
 import {
   decideSessionRefresh,
   hasBbsAuth,
+  isChallengeHtml,
   keepAuthCookie,
   pageSessionLook,
+  pickCloudflareCookies,
   pickPersistRecord,
   shouldClearSessionOnRefreshFailure,
   shouldFollowThroughSignedOutWork,
@@ -25,6 +27,7 @@ import {
   updateUpstreamCookies,
 } from '../src/services/site-session';
 import { getAccessToken, hydrateSession, markSignedOut, setSession } from '../src/services/session';
+import { configureAccessChannel, getAccessChannel } from '../src/utils/linux-access';
 import { secureGet } from '../src/services/secure-value';
 
 let failed = 0;
@@ -77,6 +80,8 @@ check('登录后菜单认成 logged-in', pageSessionLook(officialLoggedMenu) ===
 check('登录墙认成 logged-out', pageSessionLook(loginWall) === 'logged-out');
 check('发帖页认成 logged-in', pageSessionLook(composePage) === 'logged-in');
 check('挑战页认成 unknown', pageSessionLook(challenge) === 'unknown');
+check('挑战页标记齐全', isChallengeHtml('<script>window._cf_chl_opt={}</script>'));
+check('普通正文提到 Turnstile 不误触发挑战', !isChallengeHtml('<p>cf-turnstile 是 Cloudflare 的组件</p>'));
 check('空页认成 unknown', pageSessionLook('   ') === 'unknown');
 
 console.log('2) 清盘决策');
@@ -95,6 +100,11 @@ check(
   keepAuthCookie(guestJar, prev).includes('bbs_auth=secret') && keepAuthCookie(guestJar, prev).includes('bbs_csrf=b'),
 );
 check('新 jar 自己带着 bbs_auth 时用新的', keepAuthCookie('bbs_auth=new', prev) === 'bbs_auth=new');
+check(
+  '只合并 Cloudflare cookie，不混入登录态',
+  pickCloudflareCookies('cf_clearance=ok; Path=/; bbs_auth=secret; __cf_bm=bot; bbs_csrf=csrf')
+    === 'cf_clearance=ok; __cf_bm=bot',
+);
 
 const token = 'lsb.now';
 const guestSession = { cookies: 'bbs_csrf=x', user: { id: '0' } };
@@ -130,10 +140,12 @@ check(
   shouldFollowThroughSignedOutWork({ startedGeneration: 3, currentGeneration: 4, signedOut: true }) === false,
 );
 
-type Pages = Record<string, { html: string; setCookie?: string }>;
+type Pages = Record<string, { html: string; setCookie?: string; status?: number }>;
 let pages: Pages = {};
 const hits: string[] = [];
 let mockEnabled = false;
+let challengeUntilClearance = false;
+const requestCookies: string[] = [];
 const realFetch = globalThis.fetch.bind(globalThis);
 
 function pathOf(input: RequestInfo | URL): string {
@@ -149,11 +161,16 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (!mockEnabled) return realFetch(input, init);
   const path = pathOf(input);
   hits.push(path);
+  const cookies = new Headers(init?.headers).get('Cookie') ?? '';
+  requestCookies.push(cookies);
+  if (challengeUntilClearance && path === '/mobile_menu' && !/cf_clearance=passed/.test(cookies)) {
+    return new Response(challenge, { status: 403, headers: { 'content-type': 'text/html; charset=utf-8' } });
+  }
   const page = pages[path] ?? pages['*'];
   if (!page) return new Response('not found', { status: 404 });
   const headers: Record<string, string> = { 'content-type': 'text/html; charset=utf-8' };
   if (page.setCookie) headers['set-cookie'] = page.setCookie;
-  return new Response(page.html, { status: 200, headers });
+  return new Response(page.html, { status: page.status ?? 200, headers });
 }) as typeof fetch;
 
 const store = (globalThis as unknown as { __secureStore: Map<string, string> }).__secureStore
@@ -173,6 +190,7 @@ async function me(access: string) {
 async function liveOfficial(): Promise<void> {
   console.log('4) 官网现网结构');
   const UA = 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36';
+  const isGuestOrChallenge = (html: string) => pageSessionLook(html) === 'logged-out' || isChallengeHtml(html);
   const grab = async (origin: string, path: string) => {
     const res = await fetch(`${origin}${path}`, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'zh-CN', 'Cache-Control': 'no-cache' },
@@ -183,20 +201,20 @@ async function liveOfficial(): Promise<void> {
   try {
     const mirrorHome = await grab('https://linux.sb', '/');
     check(
-      '游客首页仍是 logged-out',
-      pageSessionLook(mirrorHome.html) === 'logged-out',
+      '游客首页正常，或由 Cloudflare 挑战页明确拦截',
+      isGuestOrChallenge(mirrorHome.html),
       `look=${pageSessionLook(mirrorHome.html)} len=${mirrorHome.html.length}`,
     );
     const menu = await grab('https://linux.sb', '/mobile_menu');
     check(
-      '官网游客菜单现网仍能认出 logged-out',
-      pageSessionLook(menu.html) === 'logged-out',
+      '官网游客菜单正常，或由 Cloudflare 挑战页明确拦截',
+      isGuestOrChallenge(menu.html),
       `look=${pageSessionLook(menu.html)} len=${menu.html.length}`,
     );
     const editor = await grab('https://linux.sb', '/topic_edit');
     check(
-      '游客发帖页会落到登录墙',
-      pageSessionLook(editor.html) === 'logged-out',
+      '游客发帖页落登录墙，或由 Cloudflare 挑战页明确拦截',
+      isGuestOrChallenge(editor.html),
       `look=${pageSessionLook(editor.html)} url=${editor.url}`,
     );
   } catch (error) {
@@ -217,9 +235,29 @@ async function integration(): Promise<void> {
   check('冷启动能恢复内存会话', Boolean(sessionForToken(access)) && sessionForToken(access)?.user.id === '42');
   check('冷启动 cookie 仍有 bbs_auth', hasBbsAuth(sessionForToken(access)?.cookies ?? ''));
 
+  const testGlobals = globalThis as typeof globalThis & {
+    __lsbCfInitial?: string;
+    __lsbCfPassed?: string;
+  };
+  testGlobals.__lsbCfInitial = '';
+  testGlobals.__lsbCfPassed = 'cf_clearance=passed; __cf_bm=bot';
+  challengeUntilClearance = true;
   hits.length = 0;
-  pages = { '/mobile_menu': { html: officialGuestMenu }, '/topic_edit': { html: composePage } };
+  requestCookies.length = 0;
+  pages = { '/mobile_menu': { html: officialLoggedMenu } };
   let result = await me(access!);
+  check(
+    'CF 挑战后用 clearance 重试同一个请求',
+    result.status === 200 && hits.filter((path) => path === '/mobile_menu').length === 2
+      && requestCookies.some((cookie) => /cf_clearance=passed/.test(cookie)),
+    `hits=${hits.join(',')}`,
+  );
+  challengeUntilClearance = false;
+
+  hits.length = 0;
+  requestCookies.length = 0;
+  pages = { '/mobile_menu': { html: officialGuestMenu }, '/topic_edit': { html: composePage } };
+  result = await me(access!);
   check(
     '游客菜单 + 发帖页仍登录 → 200 且会话还在',
     result.status === 200 && Boolean(sessionForToken(access)) && hasBbsAuth(sessionForToken(access)?.cookies ?? ''),
@@ -363,6 +401,86 @@ async function integration(): Promise<void> {
     result.status === 401,
     `status=${result.status} code=${result.error?.code ?? ''}`,
   );
+
+  console.log('6) 超时 / 5xx / 通道切换');
+  restoreSiteSession({
+    sessions: {
+      'lsb.test': { cookies: 'bbs_auth=secret; bbs_csrf=x', refreshToken: 'lsr.test', user: USER },
+    },
+    refresh: { 'lsr.test': 'lsb.test' },
+  });
+  setSession('lsb.test', 'lsr.test');
+
+  pages = {
+    '/mobile_menu': { html: 'Server Error', status: 500 },
+    '/topic_edit': { html: 'Server Error', status: 500 },
+  };
+  hits.length = 0;
+  result = await me('lsb.test');
+  check(
+    '两页都 5xx → 认不出来，保留本地用户',
+    result.status === 200 && (result.data as { id?: string } | undefined)?.id === '42'
+      && hasBbsAuth(sessionForToken('lsb.test')?.cookies ?? ''),
+    `status=${result.status}`,
+  );
+
+  const fetchBeforeTimeout = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error('network timeout');
+  }) as typeof fetch;
+  result = await me('lsb.test');
+  check(
+    '网络超时 → 保留本地用户',
+    result.status === 200 && (result.data as { id?: string } | undefined)?.id === '42'
+      && hasBbsAuth(sessionForToken('lsb.test')?.cookies ?? ''),
+    `status=${result.status}`,
+  );
+  globalThis.fetch = fetchBeforeTimeout;
+
+  pages = { '/mobile_menu': { html: officialLoggedMenu } };
+  configureAccessChannel('direct');
+  result = await me('lsb.test');
+  check(
+    '切到直连后探测仍认得登录',
+    result.status === 200 && Boolean(sessionForToken('lsb.test')),
+    `status=${result.status} channel=${getAccessChannel()}`,
+  );
+
+  let releaseMenu = () => {};
+  const menuGate = new Promise<void>((resolve) => {
+    releaseMenu = resolve;
+  });
+  const fetchBeforeGate = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (pathOf(input) === '/mobile_menu') {
+      configureAccessChannel('doh');
+      await menuGate;
+    }
+    return fetchBeforeGate(input, init);
+  }) as typeof fetch;
+  pages = { '/mobile_menu': { html: officialLoggedMenu } };
+  const pendingChannelMe = me('lsb.test');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  releaseMenu();
+  result = await pendingChannelMe;
+  check(
+    '探测飞着时切通道 → 会话还在',
+    result.status === 200 && Boolean(sessionForToken('lsb.test')) && getAccessChannel() === 'doh',
+    `status=${result.status}`,
+  );
+  globalThis.fetch = fetchBeforeGate;
+
+  markSignedOut();
+  destroyUpstreamSession('lsb.test');
+  configureAccessChannel('direct');
+  pages = { '/mobile_menu': { html: officialLoggedMenu } };
+  result = await me('lsb.test');
+  check(
+    '显式退出后切通道 → 不复活旧会话',
+    result.status === 401 && sessionForToken('lsb.test') == null,
+    `status=${result.status} code=${result.error?.code ?? ''}`,
+  );
+  configureAccessChannel('doh');
 }
 
 async function main() {

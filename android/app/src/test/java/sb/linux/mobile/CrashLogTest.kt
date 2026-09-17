@@ -22,4 +22,20 @@ class CrashLogTest {
     val stack = "java.lang.RuntimeException: boom\n\tat sb.linux.mobile.WebDnsProxy.attachWebView(WebDnsProxy.kt:53)"
     assertEquals(stack, CrashLog.scrub(stack))
   }
+
+  @Test
+  fun userSwipeAndOemKillAreNotCrashes() {
+    assertFalse(CrashLog.shouldRecordExit(1))
+    assertFalse(CrashLog.shouldRecordExit(2))
+    assertFalse(CrashLog.shouldRecordExit(3))
+    assertFalse(CrashLog.shouldRecordExit(10))
+    assertFalse(CrashLog.shouldRecordExit(13))
+  }
+
+  @Test
+  fun javaNativeAndAnrAreCrashes() {
+    assertEquals(true, CrashLog.shouldRecordExit(4))
+    assertEquals(true, CrashLog.shouldRecordExit(5))
+    assertEquals(true, CrashLog.shouldRecordExit(6))
+  }
 }

@@ -16,7 +16,11 @@ import java.io.ByteArrayInputStream
  *
  * 不接管的几种情况，一律返回 null 让它走原来的路（WebDnsProxy + TLS 分片）：
  *   • 非 GET —— 拦截拿不到请求体，POST 交回代理；
- *   • Range / Upgrade —— 断点续传与 WebSocket 不适合整段缓冲。
+ *   • Range / Upgrade —— 断点续传与 WebSocket 不适合整段缓冲；
+ *   • `/cdn-cgi/` —— 挑战脚本自己的一次性 XHR/POST 必须由 WebView 直连 CF。
+ *
+ * 注意：**过盾页面文档本身是要接管的**（历史上曾经不接管，见 `intercept` 里的说明）。
+ * 国内 TCP 被 SNI 阻断时，不接管 = 挑战页加载不出来 = 过盾必然超时。
  *
  * 注意：拦截返回的响应**不会**自动写进 WebView 的 cookie jar，所以 Set-Cookie 要手动补，
  * 否则站内登录态在内置浏览器里会失效。
@@ -27,10 +31,33 @@ object WebViewH3 {
   @JvmStatic
   fun intercept(request: WebResourceRequest): WebResourceResponse? {
     if (!H3.isEnabled()) return null
+    /*
+     * 过盾期间**照旧接管**。
+     *
+     * 早先这里写了「过盾中的请求不接管，CF 必须走 WebView 自己的 TLS」。那条假设只在
+     * “WebView 原生 TLS 能通”的网络下成立；实测（2026-09，国内家宽）linux.sb 的 TCP
+     * 被 SNI 阻断，原生 TLS 直接 ERR_CONNECTION_CLOSED —— 挑战页根本加载不出来，
+     * 于是过盾 65 秒必然超时（用户看到的是一张「网页无法打开」）。
+     *
+     * 现在改成：过盾也走同一条 H3/QUIC 链路。实测真浏览器在同一条网络下跑完挑战脚本
+     * 约 5 秒自动放行（3/3），所以只要挑战页能加载，过盾就能过。
+     * 代价是挑战期的页面字节经我们的链路取回再交给 WebView 渲染 —— 挑战脚本本身仍由
+     * WebView 正常执行，`cf_clearance` 也照常落到 CookieManager。
+     */
+    if (CfChallenge.pauseH3Intercept) return null
     val url = request.url ?: return null
     if (!"https".equals(url.scheme, ignoreCase = true)) return null
     val host = url.host?.lowercase() ?: return null
     if (host != "linux.sb" && !host.endsWith(".linux.sb")) return null
+    val path = url.path ?: ""
+    /*
+     * `/cdn-cgi/` 仍然不接管。
+     *
+     * 挑战脚本自己的 XHR/POST 必须由 WebView 直连 —— 它们带的是 CF 种在浏览器里的
+     * 一次性令牌，绕一层会破坏 `cf_clearance` 的签发。页面文档本身（上面的 GET）
+     * 走我们的链路把挑战载进来，脚本再自己直连回 CF 完成校验。
+     */
+    if (path.startsWith("/cdn-cgi/")) return null
     if (!"GET".equals(request.method, ignoreCase = true)) return null
 
     val incoming = request.requestHeaders ?: emptyMap()

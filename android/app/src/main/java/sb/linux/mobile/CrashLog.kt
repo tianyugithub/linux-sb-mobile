@@ -18,8 +18,8 @@ import java.util.Locale
  *
  * 闪退当时进程已经没了，不能指望用户再点进「关于项目」。
  * 下次 [install] 一跑（还在 WebView 代理之前）就把记录落到
- * 系统「下载 / LINUX-SB-崩溃日志.txt」。能打开 App 时首页直接弹复制；
- * 一直打不开就用文件管理去下载目录拿。
+ * 系统「下载 / LINUX-SB-崩溃日志.txt」。不在启动时弹窗；
+ * 能打开就去「关于项目」，打不开就用文件管理去下载目录拿。
  */
 object CrashLog {
   private const val LOG = "crash-log.txt"
@@ -171,11 +171,19 @@ object CrashLog {
       val stamp = info.timestamp
       if (stamp <= seen) continue
       if (stamp > newest) newest = stamp
+      if (!shouldRecordExit(info.reason)) continue
       chunks += formatExit(info)
     }
     if (newest != seen) prefs.edit().putLong(KEY_EXIT, newest).apply()
     if (chunks.isEmpty()) return
     append(ctx, "process-exit", chunks.joinToString("\n\n"))
+  }
+
+  /** 系统杀进程、用户划掉不算崩溃，否则每次重开都会当成异常退出。 */
+  internal fun shouldRecordExit(reason: Int): Boolean {
+    return reason == ApplicationExitInfo.REASON_CRASH
+      || reason == ApplicationExitInfo.REASON_CRASH_NATIVE
+      || reason == ApplicationExitInfo.REASON_ANR
   }
 
   private fun formatExit(info: ApplicationExitInfo): String {

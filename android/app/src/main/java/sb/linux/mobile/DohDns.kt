@@ -192,10 +192,11 @@ class DohDns : Dns {
   }
 
   private fun probeCandidates(host: String, candidates: List<InetAddress>): List<InetAddress> {
-    if (candidates.isEmpty()) return emptyList()
+    val usable = candidates.filter { !isUnusableHost(it) }
+    if (usable.isEmpty()) return emptyList()
     val ok = CopyOnWriteArrayList<InetAddress>()
     val latch = CountDownLatch(1)
-    candidates.forEach { ip ->
+    usable.forEach { ip ->
       probePool.execute {
         if (tlsReachable(host, ip, 1_800)) {
           ok += ip
@@ -389,6 +390,7 @@ class DohDns : Dns {
 
     /** Cloudflare 对外 Anycast 常见段。linux.sb 真实解析应落在这里。 */
     private fun isCloudflare(addr: InetAddress): Boolean {
+      if (isUnusableHost(addr)) return false
       val bytes = addr.address ?: return false
       if (bytes.size != 4) return false
       val a = bytes[0].toInt() and 0xFF
@@ -402,6 +404,30 @@ class DohDns : Dns {
       if (a == 141 && b == 101 && c >= 64) return true
       if (a == 108 && b == 162 && c >= 192) return true
       if (a == 173 && b == 245 && c in 48..63) return true
+      return false
+    }
+
+    /**
+     * 网络地址 / 广播地址不能当主机用。
+     *
+     * 实测踩到的坑：`isCloudflare` 认「188.114.96.0/20」整段，而 DoH 有时会把
+     * linux.sb 解成 **`188.114.96.0`**（段基址、主机位全 0，是网络地址）。
+     * Cloudflare Anycast 在任何段内 IP 上都会应答 443，于是 `tlsReachable` 放行，
+     * 这个非法地址被 `H3.engineFor` 塞进 Cronet 的 `HostResolverRules` →
+     * Cronet 在 `CronetNet` 线程上致命 `CHECK` → SIGTRAP，**整个 App 闪退**。
+     *
+     * 所以凡是主机位为 0（网络地址）或全 1（广播地址）的一律丢掉，
+     * 让它回落到下一条候选，而不是进 Cronet。
+     */
+    internal fun isUnusableHost(addr: InetAddress): Boolean {
+      val bytes = addr.address ?: return true
+      if (bytes.size != 4) return false
+      val d = bytes[3].toInt() and 0xFF
+      if (d == 0 || d == 255) return true
+      // 169.254.0.0/16 链路本地：连不上官网，别浪费探测。
+      val a = bytes[0].toInt() and 0xFF
+      val b = bytes[1].toInt() and 0xFF
+      if (a == 169 && b == 254) return true
       return false
     }
 

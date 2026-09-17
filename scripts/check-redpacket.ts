@@ -16,6 +16,7 @@
  *      是 hidden，提交只带原类型 —— 认不出来就会把类型覆盖成空，保存必被拒。
  */
 import {
+  extractRedPacketReviewForm,
   isTopicEditorPage,
   parseComments,
   parseRedPacketCompose,
@@ -23,6 +24,7 @@ import {
   parseTopicEditor,
   parseTopicRedPacket,
   parseTopicRedPacketTopup,
+  redPacketReviewPagePath,
   topicSpecialPostFields,
 } from '../src/services/live';
 
@@ -97,6 +99,7 @@ check('只有 aria-label 时也能认',
 console.log('楼主认可（真实结构，/topic/21531 #4）：待审状态 + 楼主才有的表单');
 const PENDING = '<span class="red-packet-review-state is-pending">待楼主认可</span>'
   + '<div class="red-packet-review-actions">'
+  + '<div class="red-packet-review-actions-inner"><span>占位</span></div>'
   + '<form method="post" action="/red_packet_review">'
   + '<input type="hidden" name="_csrf" value="x">'
   + '<input type="hidden" name="topic_id" value="21531">'
@@ -119,6 +122,33 @@ const expired = parseComments(
 )[0];
 check('结算结束态', expired?.redPacketReview?.state === 'expired'
   && expired?.redPacketReview?.label === '结算期已结束');
+check('提交前按 replyid 定位楼层，不回主题第 1 页',
+  redPacketReviewPagePath('21531', '177318') === '/topic/21531?replyid=177318',
+  redPacketReviewPagePath('21531', '177318'));
+const laterFloor = '<ul>'
+  + '<li class="post-item post-reply" id="post-100001" data-floor="1">'
+  + '<div class="post-info"><a class="post-author" href="/user/1">甲</a></div>'
+  + '<div class="post-meta"><span class="post-time">1小时前</span>'
+  + '<span class="red-packet-review-state is-pending">待楼主认可</span>'
+  + '<div class="red-packet-review-actions"><form method="post" action="/red_packet_review">'
+  + '<input type="hidden" name="_csrf" value="page1">'
+  + '<input type="hidden" name="topic_id" value="21531">'
+  + '<input type="hidden" name="reply_id" value="100001">'
+  + '<input type="hidden" name="decision" value="valuable">'
+  + '<button type="submit">楼主认可</button></form></div></div>'
+  + '<div class="post-content"><div class="nb-editor-post-content"><p>第一页</p></div></div></li>'
+  + '<li class="post-item post-reply" id="post-177318" data-floor="24">'
+  + '<div class="post-info"><a class="post-author" href="/user/2">乙</a></div>'
+  + '<div class="post-meta"><span class="post-time">3小时前</span>'
+  + PENDING
+  + '</div>'
+  + '<div class="post-content"><div class="nb-editor-post-content"><p>后面页</p></div></div></li></ul>';
+const laterForm = extractRedPacketReviewForm(laterFloor, '177318', 'valuable');
+check('同一页多条待审时认对 reply_id，不拿第一楼的表单',
+  laterForm?.fields.reply_id === '177318' && laterForm?.fields._csrf === 'x',
+  JSON.stringify(laterForm?.fields));
+check('第 1 页 HTML 里没有这一楼时，不能误用别人的认可表单',
+  extractRedPacketReviewForm(laterFloor.replace(/<li class="post-item post-reply" id="post-177318"[\s\S]*?<\/li>/, ''), '177318', 'valuable') === null);
 
 console.log('回帖后刷新卡片：官网 /red_packet_status 回 {ok, panel_html}');
 check('panel_html 能解析', parseRedPacketPanel(CARD)?.remaining === '剩余红包 63 份');

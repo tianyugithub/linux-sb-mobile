@@ -4,7 +4,7 @@
  *
  *   node scripts/run-stubbed.mjs scripts/check-comments.ts
  */
-import { commentsHidden, commentsRequireLogin, parseComments } from '../src/services/live';
+import { commentsHidden, commentsRequireLogin, parseComments, parseReplyDelete } from '../src/services/live';
 import { commentsEmptyKind } from '../src/utils/comments-empty';
 import {
   commentsPageMatches,
@@ -86,5 +86,21 @@ check('切页时上一页的评论数据对不上', commentsPageMatches(4, 5) ==
 check('定位模式（按楼层/回复 id）不按页码卡', commentsPageMatches(0, 5) === true);
 check('第 1 页和页码 1 对得上', commentsPageMatches(1, 1) === true);
 
-console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：评论空态 / 未读翻页回归正常');
+console.log('\n删除回帖：表单字段不能被嵌套 form 截断');
+const nestedDelete = '<form method="post" action="/sb_limit_edit_time_delete" class="sb-limit-edit-time-delete">'
+  + '<div class="uploader"><form></form></div>'
+  + '<input type="hidden" name="_csrf" value="fresh-token">'
+  + '<input type="hidden" name="content_type" value="reply">'
+  + '<input type="hidden" name="content_id" value="174299">'
+  + '<input type="hidden" name="topic_id" value="21270">'
+  + '<button class="reply-delete-link icon-delete" type="submit">删除回帖</button></form>'
+  + '<span hidden data-sb-limit-edit-time-reply-delete data-url="/sb_limit_edit_time_delete"'
+  + ' data-content-id="174299" data-topic-id="21270" data-cost="0" data-key="opkey" data-confirm="确定删除？"></span>';
+const parsedDelete = parseReplyDelete(nestedDelete, '21270', '174299');
+check('删回帖路径走官网删除接口', parsedDelete?.path === '/sb_limit_edit_time_delete');
+check('嵌套 form 截不断 _csrf', parsedDelete?.fields._csrf === 'fresh-token');
+check('content_id 还在', parsedDelete?.fields.content_id === '174299');
+check('content_type 是 reply', parsedDelete?.fields.content_type === 'reply');
+
+console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：评论空态 / 未读翻页 / 删除回帖表单回归正常');
 process.exit(failed ? 1 : 0);

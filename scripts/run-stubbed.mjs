@@ -60,6 +60,8 @@ export const Paths = { document: { uri: 'file:///doc' }, cache: { uri: 'file:///
 export default { File, Directory, Paths };`,
   'linux-notify': `export const syncNotifySession = () => undefined;
 export const setAccessChannel = () => undefined;
+export const cloudflareCookies = () => globalThis.__lsbCfInitial ?? '';
+export const passCloudflareChallenge = async () => globalThis.__lsbCfPassed ?? '';
 export const canInstallPackages = () => false;
 export const openInstallPermission = () => false;
 export const downloadApk = async (url, dest) => dest;

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { CaptchaWidget } from '../components/CaptchaWidget';
 import { OAuthBrowser } from '../components/OAuthBrowser';
@@ -17,16 +17,19 @@ export function AuthPasswordField({
   placeholder,
   visible,
   onToggle,
+  autoComplete = 'password',
 }: {
   value: string;
   onChangeText: (text: string) => void;
   placeholder: string;
   visible: boolean;
   onToggle: () => void;
+  autoComplete?: 'password' | 'new-password';
 }) {
   return (
     <View style={styles.authPasswordRow}>
       <TextInput
+        key={visible ? 'shown' : 'hidden'}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -35,9 +38,11 @@ export function AuthPasswordField({
         secureTextEntry={!visible}
         autoCapitalize="none"
         autoCorrect={false}
-        textContentType="password"
+        autoComplete={autoComplete}
+        textContentType={autoComplete === 'new-password' ? 'newPassword' : 'password'}
+        importantForAutofill="yes"
       />
-      <Pressable onPress={onToggle} hitSlop={8} style={styles.authEyeBtn} accessibilityLabel={visible ? '隐藏密码' : '显示密码'}>
+      <Pressable onPress={onToggle} hitSlop={8} style={styles.authEyeBtn} accessibilityRole="button" accessibilityLabel={visible ? '隐藏密码' : '显示密码'}>
         <Icon name={visible ? 'eye-off-outline' : 'eye-outline'} size={20} color={C.muted} />
       </Pressable>
     </View>
@@ -62,16 +67,34 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
   const [busy, setBusy] = useState(false);
   const [oauth, setOauth] = useState<'github' | 'google' | null>(null);
   const isRegister = mode === 'register';
+  const [restored, setRestored] = useState(isRegister);
 
   useEffect(() => {
     if (isRegister) return;
+    let cancelled = false;
     void loadRememberedLogin().then((saved) => {
-      if (!saved) return;
-      setName(saved.username);
-      setPassword(saved.password);
-      setRemember(true);
+      if (cancelled) return;
+      if (saved) {
+        setName(saved.username);
+        setPassword(saved.password);
+        setRemember(true);
+      }
+      setRestored(true);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [isRegister]);
+
+  useEffect(() => {
+    if (!restored || isRegister || !remember) return;
+    const username = name.trim();
+    if (!username || !password) return;
+    const timer = setTimeout(() => {
+      void saveRememberedLogin({ username, password });
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [restored, isRegister, remember, name, password]);
 
   /*
    * 这里原来有一段「自动登录」：进入登录页时若本机还留着站内 cookie，就拿它们直接登录。
@@ -86,9 +109,9 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
     return () => clearTimeout(timer);
   }, [codeWait]);
 
-  const persistLogin = (username: string, nextPassword: string) => {
-    if (remember) saveRememberedLogin({ username, password: nextPassword });
-    else clearRememberedLogin();
+  const persistLogin = async (username: string, nextPassword: string) => {
+    if (remember) await saveRememberedLogin({ username, password: nextPassword });
+    else await clearRememberedLogin();
   };
 
   const sendCode = async () => {
@@ -126,11 +149,11 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
             emailCode: emailCode.trim(),
             captchaToken,
           });
-          persistLogin(username, password);
+          await persistLogin(username, password);
           return;
         } catch (err) {
           if (err instanceof ApiError && err.code === 'REGISTERED_NEED_LOGIN') {
-            persistLogin(username, password);
+            await persistLogin(username, password);
             nav.toast(err.message);
             nav.open({ name: 'login' });
             return;
@@ -139,7 +162,7 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
         }
       }
       await nav.signIn({ username, password, captchaToken });
-      persistLogin(username, password);
+      await persistLogin(username, password);
     } catch (err) {
       setCaptchaToken(null);
       setCapNonce((value) => value + 1);
@@ -163,17 +186,29 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
           <Pressable onPress={() => nav.open({ name: 'login' })} style={[styles.authSwitchItem, !isRegister && styles.authSwitchActive]}><Text style={[styles.authSwitchText, !isRegister && styles.authSwitchTextActive]}>登录</Text></Pressable>
           <Pressable onPress={() => nav.open({ name: 'register' })} style={[styles.authSwitchItem, isRegister && styles.authSwitchActive]}><Text style={[styles.authSwitchText, isRegister && styles.authSwitchTextActive]}>注册</Text></Pressable>
         </View>
-        <TextInput value={name} onChangeText={setName} placeholder={isRegister ? '用户名（不超过 20 字）' : '用户名'} placeholderTextColor={C.dim} style={styles.authInput} autoCapitalize="none" autoCorrect={false} maxLength={20} />
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder={isRegister ? '用户名（不超过 20 字）' : '用户名'}
+          placeholderTextColor={C.dim}
+          style={styles.authInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="username"
+          textContentType="username"
+          importantForAutofill="yes"
+          maxLength={20}
+        />
         <AuthPasswordField value={password} onChangeText={setPassword} placeholder="密码" visible={showPassword} onToggle={() => setShowPassword((value) => !value)} />
         {isRegister ? (
           <>
-            <AuthPasswordField value={password2} onChangeText={setPassword2} placeholder="确认密码" visible={showPassword} onToggle={() => setShowPassword((value) => !value)} />
+            <AuthPasswordField value={password2} onChangeText={setPassword2} placeholder="确认密码" visible={showPassword} onToggle={() => setShowPassword((value) => !value)} autoComplete="new-password" />
             <TextInput value={email} onChangeText={setEmail} placeholder="邮箱" placeholderTextColor={C.dim} style={styles.authInput} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" />
           </>
         ) : (
-          <Pressable onPress={() => { const next = !remember; setRemember(next); if (!next) clearRememberedLogin(); }} style={styles.authRemember}>
+          <Pressable onPress={() => { const next = !remember; setRemember(next); if (!next) void clearRememberedLogin(); }} style={styles.authRemember}>
             <View style={[styles.authCheck, remember && styles.authCheckOn]}>{remember ? <Icon name="checkmark" size={12} color="#fff" /> : null}</View>
-            <Text style={styles.authRememberText}>记住密码</Text>
+            <Text style={styles.authRememberText}>记住账号和密码</Text>
           </Pressable>
         )}
         <CaptchaWidget key={`${mode}-${capNonce}`} token={captchaToken} onToken={setCaptchaToken} />
@@ -209,7 +244,7 @@ export function AuthScreen({ mode }: { mode: 'login' | 'register' }) {
         ) : null}
         <View style={styles.rules}>
           <Text style={styles.rulesTitle}>{isRegister ? '注册注意事项' : '登录注意事项'}</Text>
-          <Text style={styles.rulesText}>{isRegister ? '请不要使用保留用户名或冒充他人。邮箱信息不会公开。' : '账号和密码与 linux.sb 网站相同。密码区分大小写。公共设备请勿勾选记住密码。'}</Text>
+          <Text style={styles.rulesText}>{isRegister ? '请不要使用保留用户名或冒充他人。邮箱信息不会公开。' : '账号和密码与 linux.sb 网站相同，会保存在本机方便下次填写。密码区分大小写。公共设备请关掉「记住账号和密码」。'}</Text>
         </View>
       </ScrollView>
       {oauth ? (

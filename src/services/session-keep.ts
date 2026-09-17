@@ -23,7 +23,25 @@ export function keepAuthCookie(next: string, previous: string): string {
 }
 
 export function isChallengeHtml(html: string): boolean {
-  return /just a moment|cf-browser-verification|challenge-platform|cf-challenge|attention required/i.test(html);
+  return /just a moment|cf-browser-verification|challenge-platform|cf-challenge|attention required|cdn-cgi\/challenge|_cf_chl_opt|cf-mitigated/i.test(html);
+}
+
+const CF_COOKIE_NAME = /^(cf_clearance|__cf_bm|_cfuvid|cf_bm)$/i;
+
+/** 只留下 Cloudflare 盾相关 cookie，避免把 bbs_auth 以外的站点字段搅进来。 */
+export function pickCloudflareCookies(header: string): string {
+  const map = new Map<string, string>();
+  for (const part of header.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const name = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1);
+    if (!CF_COOKIE_NAME.test(name) || !value) continue;
+    map.set(name, value);
+  }
+  return [...map.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
 }
 
 function parseNavUserId(html: string): string | null {

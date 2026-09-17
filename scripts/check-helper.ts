@@ -81,15 +81,22 @@ check('消耗按级别汇总', summary.consumedByRarity.map((row) => `${row.rari
 check('产出按级别汇总', summary.gainsByRarity.map((row) => `${row.rarity}:${row.count}`).join(',') === 'SSR:7,SR:33,R:63', JSON.stringify(summary.gainsByRarity));
 
 /* ── 2. 积分账本 ─────────────────────────────────────────────────── */
+/* 用例时间必须落在「近七天」里：写死日期会随日历过期（2026-09-10 的夹具一过 7 天窗口，
+   第 3 节的过滤就剩空集、三项全 0），一律按今天生成。 */
+const atToday = (hour: number, minute = 0, second = 0) => {
+  const d = new Date();
+  d.setHours(hour, minute, second, 0);
+  return d.toISOString();
+};
 const ledger: LedgerRow[] = [
-  { reason: '每日签到', time: '2026-09-10T00:05:00.000Z', delta: 10 },
+  { reason: '每日签到', time: atToday(0, 5), delta: 10 },
   // 紧接着第二条签到：排序后与上一条相邻，用来验证「连续同类合并」
-  { reason: '每日签到', time: '2026-09-10T00:06:00.000Z', delta: 10 },
-  { reason: '给用户「caicai」的主题打赏', time: '2026-09-10T01:00:00.000Z', delta: -20 },
-  { reason: '幸运打赏奖励', time: '2026-09-10T01:00:30.000Z', delta: 60 },
-  { reason: '购买称号：万人迷', time: '2026-09-10T02:00:00.000Z', delta: -300 },
-  { reason: '发表回帖奖励', time: '2026-09-10T03:00:00.000Z', delta: 5 },
-  { reason: '用户「南柯一梦」打赏了你的主题', time: '2026-09-10T04:00:00.000Z', delta: 99 },
+  { reason: '每日签到', time: atToday(0, 6), delta: 10 },
+  { reason: '给用户「caicai」的主题打赏', time: atToday(1), delta: -20 },
+  { reason: '幸运打赏奖励', time: atToday(1, 0, 30), delta: 60 },
+  { reason: '购买称号：万人迷', time: atToday(2), delta: -300 },
+  { reason: '发表回帖奖励', time: atToday(3), delta: 5 },
+  { reason: '用户「南柯一梦」打赏了你的主题', time: atToday(4), delta: 99 },
 ];
 const analysis = analyzeLedger(ledger);
 check('收入合计', analysis.income === 10 + 10 + 60 + 5 + 99, String(analysis.income));
@@ -101,7 +108,9 @@ check('时间线连续同类合并（两条相邻签到合成一段）', analysi
 check('净变化格式化', formatDelta(-310) === '−310' && formatDelta(60) === '+60', `${formatDelta(-310)} ${formatDelta(60)}`);
 
 /* ── 3. 幸运打赏 ─────────────────────────────────────────────────── */
-const lucky = computeLucky(ledger.filter((row) => isInRangeLabel(row.time, '近七天')));
+const weekRows = ledger.filter((row) => isInRangeLabel(row.time, '近七天'));
+check('用例时间落在近七天内（空集会让下面三项静默变 0）', weekRows.length === ledger.length, `${weekRows.length}/${ledger.length}`);
+const lucky = computeLucky(weekRows);
 check('打赏次数/花费', lucky.tips === 1 && lucky.spent === 20, `${lucky.tips}/${lucky.spent}`);
 check('幸运奖励次数与金额', lucky.lucky === 1 && lucky.luckyGained === 60, `${lucky.lucky}/${lucky.luckyGained}`);
 check('收到打赏次数', lucky.received === 1, String(lucky.received));

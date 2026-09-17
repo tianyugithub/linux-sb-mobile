@@ -11,6 +11,8 @@ type LinuxNotifyNative = {
   markCrashLogAlive?(): void;
   recordJsCrash?(text: string): void;
   hasNewCrashReport?(): boolean;
+  cloudflareCookies?(): string;
+  passCloudflareChallenge?(url: string): Promise<string>;
   isEnabled(): boolean;
   syncSession(cookie: string, unread: number, baselined: boolean): void;
   start(): boolean;
@@ -69,6 +71,17 @@ export function recordJsCrash(text: string) {
 export function hasNewCrashReport(): boolean {
   if (Platform.OS !== 'android') return false;
   return Native?.hasNewCrashReport?.() ?? false;
+}
+
+export function cloudflareCookies(): string {
+  if (Platform.OS !== 'android') return '';
+  return Native?.cloudflareCookies?.() ?? '';
+}
+
+export async function passCloudflareChallenge(url: string): Promise<string> {
+  if (Platform.OS !== 'android') return '';
+  if (!Native?.passCloudflareChallenge) return '';
+  return Native.passCloudflareChallenge(url);
 }
 
 export function syncNotifySession(cookie: string, unread = -1, baselined = true) {

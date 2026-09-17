@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { FlatList, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, Platform, Text, View } from 'react-native';
 import type { Topic } from '../../data';
 import { api, mapForum, mapTopic } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
@@ -41,6 +41,15 @@ export function ForumFeed({ forum, onTopic, onBack }: { forum: string; onTopic: 
   const desc = siteBoard?.desc || board?.desc || '';
   const topics = siteBoard?.topics || board?.topics || 0;
   const forumSorts = ['新评论', '新帖子'] as const;
+  const introHeader = useMemo(() => {
+    if (!desc && !topics) return null;
+    return (
+      <View style={styles.forumIntro}>
+        {desc ? <Text style={styles.forumIntroDesc}>{desc}</Text> : null}
+        {topics ? <Text style={styles.forumIntroStats}>{topics} 个主题</Text> : null}
+      </View>
+    );
+  }, [desc, topics]);
   return (
     <View style={styles.flex}>
       <ScreenHeader title={forum} onBack={onBack} right={<IconButton name="search-outline" onPress={() => nav.open({ name: 'search' })} />} />
@@ -49,7 +58,7 @@ export function ForumFeed({ forum, onTopic, onBack }: { forum: string; onTopic: 
       </View>
       <FlatList
         data={feed.items}
-        removeClippedSubviews
+        removeClippedSubviews={Platform.OS === 'ios'}
         windowSize={7}
         maxToRenderPerBatch={8}
         initialNumToRender={8}
@@ -62,12 +71,7 @@ export function ForumFeed({ forum, onTopic, onBack }: { forum: string; onTopic: 
           if (allowMore.current && feed.hasMore) feed.loadMore();
         }}
         onEndReachedThreshold={0.4}
-        ListHeaderComponent={desc || topics ? (
-          <View style={styles.forumIntro}>
-            {desc ? <Text style={styles.forumIntroDesc}>{desc}</Text> : null}
-            {topics ? <Text style={styles.forumIntroStats}>{topics} 个主题</Text> : null}
-          </View>
-        ) : null}
+        ListHeaderComponent={introHeader}
         renderItem={({ item }) => <TopicRow topic={item} onPress={() => onTopic(item)} onUnread={() => onTopic(item, { latest: true })} />}
         ItemSeparatorComponent={RowSeparator}
         ListEmptyComponent={<StatusBlock loading={feed.loading} error={feed.error} onRetry={feed.reload} empty={!feed.loading && !feed.error} emptyTitle="这个版块还没有主题" emptyCopy="去做第一个发帖的人吧" skeleton />}

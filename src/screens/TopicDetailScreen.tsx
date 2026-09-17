@@ -62,6 +62,7 @@ import {
   UserAvatar,
   commentOwnedBy,
   commentPreview,
+  isSvgUri,
   pickUserId,
   stampLabel,
   stampTone,
@@ -134,7 +135,7 @@ function compactCount(n: number) {
 
 function BarrageAvatar({ src, name }: { src?: string; name: string }) {
   const raw = src ? mediaUrl(src) : undefined;
-  const isSvg = Boolean(raw) && /\.svg(\?|$)/i.test(raw as string);
+  const isSvg = isSvgUri(raw);
   const uri = useRemoteMedia(isSvg ? undefined : raw);
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [raw]);

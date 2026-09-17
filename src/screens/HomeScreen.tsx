@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Pressable, ScrollView, Text, View } from 'react-native';
+import { FlatList, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { sorts, type Topic } from '../../data';
 import { api, mapTopic, type DailyHotTopicDto } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
@@ -152,6 +152,39 @@ export function HomeScreen({
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [forum, sort]);
 
+  const hotHeader = useMemo(() => {
+    if (!hotTopics?.length) return null;
+    return (
+      <View style={styles.hotCard}>
+        <Pressable
+          onPress={() => void setHotTopicsOpen(!hotTopicsOpen)}
+          accessibilityLabel={hotTopicsOpen ? '收起每日热帖' : '展开每日热帖'}
+          style={styles.hotHead}
+        >
+          <Icon name="flame-outline" size={15} color={C.orange} />
+          <Text style={styles.hotTitle}>每日热帖</Text>
+          <Text numberOfLines={1} style={styles.hotHint}>
+            {hotTopics[0]?.window || '近 24 小时'} · {hotTopics.length} 条
+          </Text>
+          <Icon name={hotTopicsOpen ? 'chevron-up' : 'chevron-down'} size={15} color={C.dim} />
+        </Pressable>
+        {hotTopicsOpen
+          ? hotTopics.map((item, index) => (
+            <Pressable
+              key={item.id}
+              onPress={() => onTopic(stubTopic(item.id, item.title, item.replies))}
+              style={styles.hotRow}
+            >
+              <Text style={[styles.hotRank, index < 3 && styles.hotRankTop]}>{index + 1}</Text>
+              <Text numberOfLines={2} style={styles.hotRowTitle}>{item.title}</Text>
+              <Text style={styles.hotRowMeta}>{item.replies} 回复</Text>
+            </Pressable>
+          ))
+          : null}
+      </View>
+    );
+  }, [hotTopics, hotTopicsOpen, onTopic, setHotTopicsOpen]);
+
   return (
     <View style={styles.flex}>
       <Header onSearch={onSearch} onProfile={onProfile} />
@@ -203,12 +236,12 @@ export function HomeScreen({
       <FlatList
         ref={listRef}
         data={visibleFeed}
-        removeClippedSubviews
+        removeClippedSubviews={Platform.OS === 'ios'}
         windowSize={7}
         maxToRenderPerBatch={8}
         initialNumToRender={8}
         updateCellsBatchingPeriod={40}
-        extraData={`${forum}-${sort}-${feed.loading}-${hiddenCount}-${hotTopicsOpen}-${hotTopics?.length ?? 0}`}
+        extraData={`${forum}-${sort}-${hotTopicsOpen}`}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.feedContent}
         onRefresh={feed.reload}
@@ -218,35 +251,7 @@ export function HomeScreen({
         }}
         onEndReachedThreshold={0.4}
         renderItem={({ item }) => <TopicRow topic={item} onPress={() => onTopic(item)} onUnread={() => onTopic(item, { latest: true })} />}
-        ListHeaderComponent={hotTopics?.length ? (
-          <View style={styles.hotCard}>
-            <Pressable
-              onPress={() => void setHotTopicsOpen(!hotTopicsOpen)}
-              accessibilityLabel={hotTopicsOpen ? '收起每日热帖' : '展开每日热帖'}
-              style={styles.hotHead}
-            >
-              <Icon name="flame-outline" size={15} color={C.orange} />
-              <Text style={styles.hotTitle}>每日热帖</Text>
-              <Text numberOfLines={1} style={styles.hotHint}>
-                {hotTopics[0]?.window || '近 24 小时'} · {hotTopics.length} 条
-              </Text>
-              <Icon name={hotTopicsOpen ? 'chevron-up' : 'chevron-down'} size={15} color={C.dim} />
-            </Pressable>
-            {hotTopicsOpen
-              ? hotTopics.map((item, index) => (
-                <Pressable
-                  key={item.id}
-                  onPress={() => onTopic(stubTopic(item.id, item.title, item.replies))}
-                  style={styles.hotRow}
-                >
-                  <Text style={[styles.hotRank, index < 3 && styles.hotRankTop]}>{index + 1}</Text>
-                  <Text numberOfLines={2} style={styles.hotRowTitle}>{item.title}</Text>
-                  <Text style={styles.hotRowMeta}>{item.replies} 回复</Text>
-                </Pressable>
-              ))
-              : null}
-          </View>
-        ) : null}
+        ListHeaderComponent={hotHeader}
         ItemSeparatorComponent={RowSeparator}
         ListEmptyComponent={<StatusBlock loading={feed.loading} error={feed.error} onRetry={feed.reload} empty={!feed.loading && !feed.error} emptyTitle={allHidden ? TOPIC_FILTER_EMPTY_LIST : footprint ? '暂时没有新回复' : applyFeatured ? '暂时没有申精主题' : '暂时没有内容'} emptyCopy={allHidden ? TOPIC_FILTER_EMPTY_LIST_COPY : footprint ? '你浏览过、并且有新回复的主题会出现在这里' : applyFeatured ? '正在投票加精的主题会出现在这里' : '换个版块看看吧'} skeleton />}
         ListFooterComponent={<ListFooter loadingMore={feed.loadingMore} hasMore={feed.hasMore} count={feed.items.length} />}

@@ -15,6 +15,9 @@ export const LINUX_CAP_MIRROR_ORIGIN = 'https://cap-lsb.miapi.cc';
 export const LINUX_MIRROR_HOST = 'lsb.miapi.cc';
 export const LINUX_CAP_MIRROR_HOST = 'cap-lsb.miapi.cc';
 export const LINUX_CAP_PREFIX = '/__cap__';
+/** 与原生 Cronet / 过盾 WebView 同一条 UA；`cf_clearance` 会绑 User-Agent。 */
+export const LINUX_BROWSER_UA =
+  'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 /** DoH 通道：国内能问到的 stellafortuna query-dns。 */
 export const LINUX_DOH_QUERY = 'https://stellafortuna.ddd.oaifree.com/query-dns';
 

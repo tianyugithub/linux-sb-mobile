@@ -92,6 +92,26 @@ class LinuxNotifyModule : Module() {
       null
     }
 
+    Function("cloudflareCookies") {
+      try {
+        Class.forName("sb.linux.mobile.CfChallenge").getMethod("cookieHeader").invoke(null) as? String ?: ""
+      } catch (_: Exception) {
+        ""
+      }
+    }
+
+    AsyncFunction("passCloudflareChallenge") Coroutine { url: String ->
+      withContext(Dispatchers.IO) {
+        try {
+          Class.forName("sb.linux.mobile.CfChallenge")
+            .getMethod("pass", String::class.java)
+            .invoke(null, url) as? String ?: ""
+        } catch (_: Exception) {
+          ""
+        }
+      }
+    }
+
     Function("setAccessChannel") { channel: String ->
       val context = appCtx() ?: return@Function null
       try {

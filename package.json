@@ -36,6 +36,7 @@
     "check:session": "node scripts/run-stubbed.mjs scripts/check-session.ts",
     "check:theme": "node scripts/run-stubbed.mjs scripts/check-theme.ts",
     "check:comments": "node scripts/run-stubbed.mjs scripts/check-comments.ts",
+    "check:svg": "npx tsx scripts/check-svg.ts",
     "check:apk": "npx tsx scripts/check-apk-version.ts"
   },
   "dependencies": {

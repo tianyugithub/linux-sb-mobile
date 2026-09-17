@@ -5,6 +5,18 @@ const KEY = 'lsb.remember_login';
 
 export type RememberedLogin = { username: string; password: string };
 
+export function parseRememberedLogin(raw: string | null | undefined): RememberedLogin | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<RememberedLogin>;
+    const username = typeof parsed.username === 'string' ? parsed.username.trim() : '';
+    if (!username || typeof parsed.password !== 'string') return null;
+    return { username, password: parsed.password };
+  } catch {
+    return null;
+  }
+}
+
 function webStore(): Storage | null {
   if (Platform.OS !== 'web') return null;
   try {
@@ -19,36 +31,35 @@ export async function loadRememberedLogin(): Promise<RememberedLogin | null> {
     const raw = Platform.OS === 'web'
       ? webStore()?.getItem(KEY) ?? null
       : await secureGet(KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<RememberedLogin>;
-    if (!parsed.username || typeof parsed.password !== 'string') return null;
-    return { username: parsed.username, password: parsed.password };
+    return parseRememberedLogin(raw);
   } catch {
     return null;
   }
 }
 
-export function saveRememberedLogin(input: RememberedLogin) {
-  const raw = JSON.stringify(input);
-  if (Platform.OS === 'web') {
-    try {
+export async function saveRememberedLogin(input: RememberedLogin): Promise<void> {
+  const username = input.username.trim();
+  if (!username) return;
+  const raw = JSON.stringify({ username, password: input.password });
+  try {
+    if (Platform.OS === 'web') {
       webStore()?.setItem(KEY, raw);
-    } catch {
-      /* ignore */
+      return;
     }
-    return;
+    await secureSet(KEY, raw);
+  } catch {
+    /* 本机写失败就下次再试，不能挡登录 */
   }
-  void secureSet(KEY, raw).catch(() => undefined);
 }
 
-export function clearRememberedLogin() {
-  if (Platform.OS === 'web') {
-    try {
+export async function clearRememberedLogin(): Promise<void> {
+  try {
+    if (Platform.OS === 'web') {
       webStore()?.removeItem(KEY);
-    } catch {
-      /* ignore */
+      return;
     }
-    return;
+    await secureDelete(KEY);
+  } catch {
+    /* ignore */
   }
-  void secureDelete(KEY).catch(() => undefined);
 }

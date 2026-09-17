@@ -42,6 +42,7 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     CrashLog.install(this)
+    CfChallenge.install(this)
     TlsFrag.install()
     LinuxAccess.init(this)
     H3.init(this)

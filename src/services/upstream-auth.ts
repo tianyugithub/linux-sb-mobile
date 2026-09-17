@@ -14,11 +14,11 @@ import {
 } from './site-session';
 import { markSignedOut, sessionAcceptsCookies, sessionGeneration } from './session';
 import { decideSessionRefresh, hasBbsAuth, isChallengeHtml, keepAuthCookie, pageSessionLook, shouldFollowThroughSignedOutWork } from './session-keep';
+import { cloudflareCookieHeader, passCloudflareIfNeeded, rememberCloudflareCookies } from './cloudflare';
 import { decodeBase64Json } from '../utils/base64';
+import { LINUX_BROWSER_UA } from '../utils/linux-access';
+import { mergeCookieHeaders } from '../utils/site-cookies';
 import { isNativeApp, siteCredentials } from '../utils/runtime';
-
-const BROWSER_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 let captchaCache: { at: number; data: CaptchaChallengeDto } | null = null;
 
@@ -99,13 +99,14 @@ function decodeFormError(cookies: string): string | null {
 }
 
 function browserHeaders(cookies?: string, referer = '/login'): Record<string, string> {
+  const jar = mergeCookieHeaders(cookies ?? '', cloudflareCookieHeader());
   const headers: Record<string, string> = {
     Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9',
-    'User-Agent': BROWSER_UA,
+    'User-Agent': LINUX_BROWSER_UA,
     Referer: referer.startsWith('http') ? referer : `${liveBase()}${referer}`,
   };
-  if (cookies) headers.Cookie = cookies;
+  if (jar) headers.Cookie = jar;
   return headers;
 }
 
@@ -145,11 +146,40 @@ function readCsrf(html: string): string | null {
     || null;
 }
 
-async function linuxFetch(url: string, init: RequestInit, timeoutMs = 15_000): Promise<Response> {
+function withCloudflareHeaders(init: RequestInit, clearance: string): RequestInit {
+  const headers = new Headers(init.headers);
+  const jar = mergeCookieHeaders(headers.get('Cookie') ?? '', clearance);
+  if (jar) headers.set('Cookie', jar);
+  return { ...init, headers };
+}
+
+async function linuxFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 15_000,
+  mayRetryChallenge = true,
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    rememberCloudflareCookies(setCookiesOf(response).join('; '));
+    if (!mayRetryChallenge) return response;
+    let html = '';
+    try {
+      html = await response.clone().text();
+    } catch {
+      return response;
+    }
+    if (!isChallengePage(html)) return response;
+
+    /*
+     * 挑战由 Cloudflare 边缘直接返回，原来的登录/注册 POST 尚未进官网，
+     * 所以 clearance 到手后重发一次不会造成重复提交。
+     */
+    const clearance = await passCloudflareIfNeeded(html, response.url || url);
+    if (!clearance) return response;
+    return linuxFetch(url, withCloudflareHeaders(init, clearance), timeoutMs, false);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       throw new MockApiError(504, 'UPSTREAM', '连接超时，请检查网络后重试');
@@ -176,6 +206,7 @@ async function linuxGet(
     credentials,
   });
   const html = await response.text();
+  rememberCloudflareCookies(setCookiesOf(response).join('; '));
   return {
     cookies: applySetCookie(cookies, setCookiesOf(response)),
     html,

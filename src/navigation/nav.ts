@@ -8,7 +8,7 @@ import { classifyAppHref } from '../utils/links';
 import { stubTopic, type UserPreview } from './stack';
 
 export type { UserPreview } from './stack';
-export { stackMotion, stubMember, stubTopic } from './stack';
+export { stackMotion, stubMember, stubTopic, STACK_PUSH_ANIMATION, TAB_SWITCH_FADE_MS } from './stack';
 
 export type Extra =
   | { name: 'topic'; topic: Topic; latest?: boolean; editedComment?: CommentDto; replyId?: string; floor?: string }

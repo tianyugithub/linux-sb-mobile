@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { hasNewCrashReport, markCrashLogAlive, readCrashLog, recordJsCrash } from 'linux-notify';
+import { markCrashLogAlive, recordJsCrash } from 'linux-notify';
 
 type ErrorUtilsLike = {
   getGlobalHandler?: () => ((error: Error, isFatal?: boolean) => void) | undefined;
@@ -9,7 +9,7 @@ type ErrorUtilsLike = {
 /**
  * JS 侧崩溃接到同一份本机文件。原生闪退由 CrashLog.kt 在下次启动
  * （WebView 之前）写进系统「下载 / LINUX-SB-崩溃日志.txt」。
- * 能打开时首页弹复制，不依赖「关于项目」。
+ * 不在启动时弹窗；要看记录去「关于项目」。
  */
 export function installCrashLog() {
   if (Platform.OS !== 'android') return;
@@ -22,11 +22,4 @@ export function installCrashLog() {
     recordJsCrash(`${isFatal ? 'fatal' : 'error'}\n${stack}`);
     previous?.(error, isFatal);
   });
-}
-
-/** 这次启动刚补到的崩溃记录。没有就不弹。 */
-export function takeCrashPrompt(): string {
-  if (Platform.OS !== 'android') return '';
-  if (!hasNewCrashReport()) return '';
-  return readCrashLog().trim();
 }

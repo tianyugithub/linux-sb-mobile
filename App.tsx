@@ -1,11 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, BackHandler, Platform, Pressable, Text, View, Animated } from 'react-native';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Animated, AppState, BackHandler, Platform, Pressable, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { Screen, ScreenStack, ScreenStackHeaderConfig, enableScreens } from 'react-native-screens';
 import { guest, type Member, type Topic } from './data';
 import { InAppBrowser } from './src/components/InAppBrowser';
 import { Icon, ToastHost, ConfirmDialog, pickUserId, type DialogState } from './src/components/ui';
-import { NavCtx, openAppHref, stubMember, useAppInsets, type Extra, type Nav } from './src/navigation/nav';
+import { NavCtx, STACK_PUSH_ANIMATION, TAB_SWITCH_FADE_MS, openAppHref, stubMember, useAppInsets, type Extra, type Nav } from './src/navigation/nav';
 import { PrefsProvider, usePrefs } from './src/hooks/usePrefs';
 import { applyScheme, C } from './src/theme/palette';
 import { styles } from './src/theme/app-styles';
@@ -22,8 +23,7 @@ import { githubBrowseUrl } from './src/utils/github-access';
 import { viaAccess } from './src/utils/linux-access';
 import { checkForUpdate, updatePromptText } from './src/services/app-update';
 import { downloadAndInstallUpdate, rememberSkippedUpdate, wasUpdateSkipped } from './src/services/app-install';
-import { installCrashLog, takeCrashPrompt } from './src/services/crash-log';
-import { copyText } from './src/utils/share';
+import { installCrashLog } from './src/services/crash-log';
 import { hydrateTopicSeen } from './src/utils/topic-seen';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { CheckinScreen } from './src/screens/CheckinScreen';
@@ -56,8 +56,9 @@ import { TopicDetailScreen } from './src/screens/TopicDetailScreen';
 import { UserScreen } from './src/screens/UserScreen';
 import { WalletScreen } from './src/screens/WalletScreen';
 
+enableScreens();
+
 function extraPageKey(extra: Extra | null | undefined): string {
-  if (!extra) return '';
   if (!extra) return '';
   if (extra.name === 'topic') return `topic:${extra.topic.id}`;
   if (extra.name === 'user') return `user:${String(extra.member.id || extra.member.uid || extra.member.name)}`;
@@ -68,6 +69,38 @@ function extraPageKey(extra: Extra | null | undefined): string {
   if (extra.name === 'collection') return `collection:${extra.album.id}`;
   if (extra.name === 'my') return `my:${extra.kind}`;
   return extra.name;
+}
+
+/** 原生栈的一页：系统做进出动画，JS 不再位移整页（位移会顶偏评论区 WebView）。 */
+function AppStackScreen({
+  screenId,
+  animation,
+  children,
+  onDismissed,
+}: {
+  screenId?: string;
+  animation?: typeof STACK_PUSH_ANIMATION;
+  children: React.ReactNode;
+  onDismissed?: (event: { nativeEvent: { dismissCount: number } }) => void;
+}) {
+  return (
+    <Screen
+      screenId={screenId}
+      enabled
+      isNativeStack
+      style={styles.stackLayer}
+      stackAnimation={animation ? (Platform.OS === 'android' ? 'slide_from_right' : animation) : undefined}
+      stackPresentation="push"
+      replaceAnimation="push"
+      freezeOnBlur={false}
+      gestureEnabled={false}
+      nativeBackButtonDismissalEnabled={false}
+      onDismissed={onDismissed}
+    >
+      {children}
+      <ScreenStackHeaderConfig hidden />
+    </Screen>
+  );
 }
 
 /** 登录 / 注册 / 退出时清掉查询缓存与未读记忆，避免串号显示上一个账号的数据。 */
@@ -111,6 +144,11 @@ function AppRoot() {
   const insets = useAppInsets();
   const { scheme } = usePrefs();
   const [tab, setTab] = useState<'home' | 'forums' | 'compose' | 'messages' | 'profile'>('home');
+  /** 进过的主 Tab 不再卸载：切走保留滚动位置与页面状态，回来直接显示（首次进才挂载，冷启动不加压）。 */
+  const [visitedTabs, setVisitedTabs] = useState<typeof tab[]>(['home']);
+  /** Tab 切换淡入：只做合成器透明度（160–220ms），无位移，不触发布局、不顶偏 WebView。 */
+  const tabFade = useRef(new Animated.Value(1)).current;
+  const tabFadePending = useRef(false);
   const [stack, setStack] = useState<Extra[]>([]);
   const [openForum, setOpenForum] = useState<string | null>(null);
   const [homeJump, setHomeJump] = useState<{ sort: string; nonce: number } | null>(null);
@@ -120,77 +158,36 @@ function AppRoot() {
   const [unread, setUnread] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [updateDialog, setUpdateDialog] = useState<DialogState | null>(null);
-  const [crashDialog, setCrashDialog] = useState<DialogState | null>(null);
   const updateTagRef = useRef('');
-  const crashPromptedRef = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 启动流程（本地会话恢复）是否已完成：完成前不接受通知带来的页面跳转，保证冷启动先落首页。 */
   const bootedRef = useRef(false);
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const extra = stack[stack.length - 1] ?? null;
-  const extraToken = extraPageKey(extra);
-  const extraAnim = useRef(new Animated.Value(1)).current;
-  const closingRef = useRef(false);
-  const closeGen = useRef(0);
-  const prevStackLen = useRef(0);
-  const prevExtraToken = useRef('');
   const stackRef = useRef(stack);
   stackRef.current = stack;
+  const stackKeys = useRef(new WeakMap<Extra, string>());
+  const stackKeySeq = useRef(0);
+  const keyForPage = (page: Extra) => {
+    const existing = stackKeys.current.get(page);
+    if (existing) return existing;
+    const next = `${extraPageKey(page)}#${stackKeySeq.current++}`;
+    stackKeys.current.set(page, next);
+    return next;
+  };
   const closeStack = useCallback(() => {
-    if (closingRef.current) return;
-    if (!stackRef.current.length) return;
-    closingRef.current = true;
-    const gen = ++closeGen.current;
-    extraAnim.stopAnimation();
-    extraAnim.setValue(1);
-    Animated.timing(extraAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
-      if (gen !== closeGen.current) return;
-      extraAnim.setValue(1);
-      closingRef.current = false;
-      if (finished) setStack((current) => current.slice(0, -1));
-    });
-  }, [extraAnim]);
+    setStack((current) => (current.length ? current.slice(0, -1) : current));
+  }, []);
   const resetStack = useCallback(() => {
-    closeGen.current += 1;
-    closingRef.current = false;
-    extraAnim.stopAnimation();
-    extraAnim.setValue(1);
     setStack([]);
-  }, [extraAnim]);
+  }, []);
   const commitStack = useCallback((update: (current: Extra[]) => Extra[]) => {
     setStack((current) => {
       const next = update(current);
-      if (next === current) return current;
-      const grew = next.length > current.length;
-      const replaced = next.length === current.length && next.length > 0
-        && extraPageKey(next[next.length - 1]) !== extraPageKey(current[current.length - 1]);
-      if (grew || replaced) {
-        closeGen.current += 1;
-        closingRef.current = false;
-        extraAnim.stopAnimation();
-        extraAnim.setValue(0);
-      }
-      return next;
+      return next === current ? current : next;
     });
-  }, [extraAnim]);
-  useEffect(() => {
-    const len = stack.length;
-    const grew = len > prevStackLen.current;
-    const shrunk = len < prevStackLen.current;
-    const replaced = !grew && !shrunk && len > 0 && extraToken !== prevExtraToken.current;
-    prevStackLen.current = len;
-    prevExtraToken.current = extraToken;
-    if (closingRef.current) return;
-    if (!len) {
-      extraAnim.setValue(1);
-      return;
-    }
-    if (grew || replaced) {
-      extraAnim.setValue(0);
-      Animated.timing(extraAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-    }
-  }, [extraToken, extraAnim, stack.length]);
+  }, []);
   const forumRef = useRef(openForum);
   forumRef.current = openForum;
   const lastBackAt = useRef(0);
@@ -205,18 +202,6 @@ function AppRoot() {
 
   useEffect(() => {
     installCrashLog();
-    const log = takeCrashPrompt();
-    if (!log) return;
-    crashPromptedRef.current = true;
-    setCrashDialog({
-      title: '上次异常退出',
-      text: '不必进设置。点复制，把内容发给开发。App 打不开时，到系统「下载」里找 LINUX-SB-崩溃日志.txt。',
-      confirmLabel: '复制',
-      onConfirm: async () => {
-        await copyText(log);
-        showToastRef.current('已复制');
-      },
-    });
   }, []);
 
   useEffect(() => {
@@ -428,7 +413,6 @@ function AppRoot() {
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
-        if (crashPromptedRef.current) return;
         const next = await checkForUpdate();
         if (cancelled || next.status !== 'available' || !next.apkUrl) return;
         if (await wasUpdateSkipped(next.latest)) return;
@@ -647,14 +631,44 @@ function AppRoot() {
   }, [me, checkedIn, unread, refreshMe, sessionReady, commitStack, closeStack, resetStack]);
 
   const switchTab = (key: typeof tab) => {
+    const same = key === tab;
     resetStack();
     if (key === 'forums' && tab === 'forums') setOpenForum(null);
     if (key !== 'forums') setOpenForum(null);
+    // 点当前 Tab 只回根（上面已做），不重播淡入、不重复导航。
+    if (same) return;
+    setVisitedTabs((seen) => (seen.includes(key) ? seen : [...seen, key]));
+    tabFade.stopAnimation();
+    tabFade.setValue(0);
+    tabFadePending.current = true;
     setTab(key);
   };
 
-  const openTopic = (topic: Topic, opts?: { latest?: boolean }) => {
+  useLayoutEffect(() => {
+    if (!tabFadePending.current) return;
+    tabFadePending.current = false;
+    // 必须等 setTab 提交完再淡入：同一拍里 start() 会把还没卸掉的旧页淡进来，
+    // 用户看到的就是「闪一下之前的页面」。
+    Animated.timing(tabFade, { toValue: 1, duration: TAB_SWITCH_FADE_MS, useNativeDriver: true }).start();
+  }, [tab, tabFade]);
+
+  const openTopic = useCallback((topic: Topic, opts?: { latest?: boolean }) => {
     commitStack((current) => [...current, { name: 'topic', topic, latest: Boolean(opts?.latest) }]);
+  }, [commitStack]);
+
+  /** 主 Tab 内容：命名用小写 helper 而不是组件，避免被当成条件挂载的 Screen。 */
+  const renderTabPage = (key: typeof tab) => {
+    if (key === 'home') {
+      return <HomeScreen jumpSort={homeJump} onJumpApplied={() => setHomeJump(null)} onTopic={openTopic} onSearch={() => commitStack(() => [{ name: 'search' }])} onProfile={() => switchTab('profile')} />;
+    }
+    if (key === 'compose') return <ComposeScreen onBack={() => switchTab('home')} />;
+    if (key === 'profile') return <ProfileScreen />;
+    if (key === 'forums') {
+      return openForum
+        ? <ForumFeed forum={openForum} onTopic={openTopic} onBack={() => setOpenForum(null)} />
+        : <ForumsScreen onOpenForum={setOpenForum} onSearch={() => commitStack(() => [{ name: 'search' }])} />;
+    }
+    return <MessagesScreen />;
   };
 
   const renderStackPage = (page: Extra): React.ReactNode => {
@@ -761,93 +775,91 @@ function AppRoot() {
     return null;
   };
 
-  const hasStack = stack.length > 0;
-  const content = (
-    <View style={styles.flex}>
-      <View
-        style={styles.flex}
-        collapsable={false}
-        pointerEvents={hasStack ? 'none' : 'auto'}
-        accessibilityElementsHidden={hasStack}
-        importantForAccessibility={hasStack ? 'no-hide-descendants' : 'auto'}
-      >
-        {tab === 'home' ? <HomeScreen jumpSort={homeJump} onJumpApplied={() => setHomeJump(null)} onTopic={openTopic} onSearch={() => commitStack(() => [{ name: 'search' }])} onProfile={() => setTab('profile')} />
-          : tab === 'compose' ? <ComposeScreen onBack={() => setTab('home')} />
-          : tab === 'profile' ? <ProfileScreen />
-          : tab === 'forums' ? (openForum ? <ForumFeed forum={openForum} onTopic={openTopic} onBack={() => setOpenForum(null)} /> : <ForumsScreen onOpenForum={setOpenForum} onSearch={() => commitStack(() => [{ name: 'search' }])} />)
-          : <MessagesScreen />}
-      </View>
-      {stack.map((page, index) => {
-        const isTop = index === stack.length - 1;
-        const isPrev = index === stack.length - 2;
+  const tabBarOnRoot = tab !== 'compose';
+  const lightChrome = scheme === 'light';
+  const tabBarPad = Math.max(insets.bottom, 8);
+  const toastOffset = 16 + (!extra && tabBarOnRoot ? 52 + tabBarPad : 56 + insets.bottom);
+  const tabBar = tabBarOnRoot ? (
+    <View style={[styles.tabbar, { paddingBottom: tabBarPad }]}>
+      {([
+        { key: 'home', icon: 'home-outline', iconActive: 'home', label: '首页' },
+        { key: 'forums', icon: 'grid-outline', iconActive: 'grid', label: '版块' },
+        { key: 'compose', icon: 'add', iconActive: 'add', label: '发布' },
+        { key: 'messages', icon: 'chatbubble-outline', iconActive: 'chatbubble', label: '消息' },
+        { key: 'profile', icon: 'person-outline', iconActive: 'person', label: '我的' },
+      ] as const).map((item) => {
+        const active = tab === item.key;
         return (
-          <Animated.View
-            key={`${index}:${extraPageKey(page)}`}
-            pointerEvents={isTop ? 'auto' : 'none'}
-            accessibilityElementsHidden={!isTop}
-            importantForAccessibility={isTop ? 'auto' : 'no-hide-descendants'}
-            collapsable={false}
-            style={[
-              styles.stackLayer,
-              !isTop && !isPrev ? styles.hiddenScreen : null,
-              isTop ? {
-                opacity: extraAnim,
-                transform: [{
-                  translateX: extraAnim.interpolate({ inputRange: [0, 1], outputRange: [28, 0] }),
-                }],
-              } : null,
-            ]}
-          >
-            {renderStackPage(page)}
-          </Animated.View>
+          <Pressable key={item.key} onPress={() => switchTab(item.key)} style={styles.tabItem}>
+            <View style={[styles.tabIconWrap, item.key === 'compose' && styles.composeTab]}>
+              <Icon name={active ? item.iconActive : item.icon} size={item.key === 'compose' ? 22 : 20} color={item.key === 'compose' ? '#fff' : active ? C.redBright : C.muted} />
+            </View>
+            <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{item.label}</Text>
+            {item.key === 'messages' && unread > 0 ? (
+              <View style={styles.tabCountBadge}>
+                <Text style={styles.tabCountText}>{unread > 99 ? '99+' : String(unread)}</Text>
+              </View>
+            ) : null}
+          </Pressable>
         );
       })}
     </View>
+  ) : null;
+
+  const content = (
+    <ScreenStack style={styles.flex}>
+      <AppStackScreen>
+        <View style={styles.flex} collapsable={false}>
+          <Animated.View style={[styles.flex, styles.tabStage, { opacity: tabFade }]}>
+            {(['home', 'forums', 'compose', 'messages', 'profile'] as const).map((key) => (
+              // 兜底 `key === tab`：nav 直调 setTab 时也能画出来，永远不给空白页。
+              key === tab || visitedTabs.includes(key) ? (
+                <View
+                  key={key}
+                  pointerEvents={key === tab ? 'auto' : 'none'}
+                  style={key === tab ? [styles.flex, styles.tabPageActive] : styles.hiddenScreen}
+                >
+                  {renderTabPage(key)}
+                </View>
+              ) : null
+            ))}
+          </Animated.View>
+          {tabBar}
+        </View>
+      </AppStackScreen>
+      {stack.map((page) => {
+        const id = keyForPage(page);
+        const needsBottomGap = page.name !== 'topic' && page.name !== 'dm';
+        return (
+          <AppStackScreen
+            key={id}
+            screenId={id}
+            animation={STACK_PUSH_ANIMATION}
+            onDismissed={(event) => {
+              const count = Math.max(1, event.nativeEvent.dismissCount || 1);
+              setStack((current) => {
+                const idx = current.lastIndexOf(page);
+                if (idx < 0) return current;
+                return current.slice(0, Math.max(0, idx - count + 1));
+              });
+            }}
+          >
+            <View style={styles.flex} collapsable={false}>
+              <View style={styles.flex}>{renderStackPage(page)}</View>
+              {needsBottomGap ? <View style={{ height: insets.bottom, backgroundColor: C.canvas }} /> : null}
+            </View>
+          </AppStackScreen>
+        );
+      })}
+    </ScreenStack>
   );
 
-  const showTab = !extra && tab !== 'compose';
-  const lightChrome = scheme === 'light';
-  const tabBarPad = Math.max(insets.bottom, 8);
-  const toastOffset = 16 + (showTab ? 52 + tabBarPad : 56 + insets.bottom);
   const app = (
     <NavCtx.Provider value={nav}>
       <View style={styles.safe}>
         <StatusBar style={lightChrome ? 'dark' : 'light'} translucent />
         <View style={styles.flex}>{content}</View>
-        {showTab ? (
-          <View style={[styles.tabbar, { paddingBottom: tabBarPad }]}>
-            {([
-              { key: 'home', icon: 'home-outline', iconActive: 'home', label: '首页' },
-              { key: 'forums', icon: 'grid-outline', iconActive: 'grid', label: '版块' },
-              { key: 'compose', icon: 'add', iconActive: 'add', label: '发布' },
-              { key: 'messages', icon: 'chatbubble-outline', iconActive: 'chatbubble', label: '消息' },
-              { key: 'profile', icon: 'person-outline', iconActive: 'person', label: '我的' },
-            ] as const).map((item) => {
-              const active = tab === item.key;
-              return (
-                <Pressable key={item.key} onPress={() => switchTab(item.key)} style={styles.tabItem}>
-                  <View style={[styles.tabIconWrap, item.key === 'compose' && styles.composeTab]}>
-                    <Icon name={active ? item.iconActive : item.icon} size={item.key === 'compose' ? 22 : 20} color={item.key === 'compose' ? '#fff' : active ? C.redBright : C.muted} />
-                  </View>
-                  <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{item.label}</Text>
-                  {item.key === 'messages' && unread > 0 ? (
-                    <View style={styles.tabCountBadge}>
-                      <Text style={styles.tabCountText}>{unread > 99 ? '99+' : String(unread)}</Text>
-                    </View>
-                  ) : null}
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : extra?.name !== 'topic' && extra?.name !== 'dm' ? (
-          // 帖子详情和私信会话自带底部输入栏，已经包含安全区，不再叠加占位。
-          <View style={{ height: insets.bottom, backgroundColor: C.canvas }} />
-        ) : null}
         <ToastHost message={toast} offset={toastOffset} />
-        <ConfirmDialog
-          dialog={crashDialog}
-          onClose={() => setCrashDialog(null)}
-        />
         <ConfirmDialog
           dialog={updateDialog}
           onClose={() => {

@@ -139,7 +139,7 @@ export function AboutScreen() {
         <SettingsRow
           icon="bug-outline"
           title="崩溃日志"
-          subtitle="只存在本机，不上传。首页会弹；打不开就去系统「下载」拿 LINUX-SB-崩溃日志.txt。"
+          subtitle="只存在本机，不上传。打不开就去系统「下载」拿 LINUX-SB-崩溃日志.txt。"
           value={crashLog ? '有记录' : '无'}
           chevron
           onPress={() => {

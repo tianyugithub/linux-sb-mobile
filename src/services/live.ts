@@ -72,18 +72,16 @@ import { redactSecrets } from '../utils/redact';
 import { MockApiError, type MockRequest, type MockResponse } from './mock';
 import { cookiesForToken, sessionForToken, updateUpstreamCookies, updateUpstreamUser } from './site-session';
 import { sessionAcceptsCookies } from './session';
-import { keepAuthCookie } from './session-keep';
+import { isChallengeHtml, keepAuthCookie } from './session-keep';
+import { cloudflareCookieHeader, passCloudflareIfNeeded, rememberCloudflareCookies } from './cloudflare';
 import { isNativeApp, siteCredentials } from '../utils/runtime';
 import { syncNotifySession } from 'linux-notify';
 import { ESSENCE_REASON_MAX, ESSENCE_REASON_MIN } from '../data/essence';
 import { hasOfficialImageUpload, isR2Ready, loadR2Config, rememberOfficialUploadCapability, uploadToR2 } from './r2-config';
-import { LINUX_ORIGIN, isLiveOrigin, liveBase, viaAccess } from '../utils/linux-access';
-import { hasLinuxSessionCookie, writeLinuxCookies } from '../utils/site-cookies';
+import { LINUX_BROWSER_UA, LINUX_ORIGIN, isLiveOrigin, liveBase, viaAccess } from '../utils/linux-access';
+import { hasLinuxSessionCookie, mergeCookieHeaders, writeLinuxCookies } from '../utils/site-cookies';
 
 export { LINUX_ORIGIN };
-
-const BROWSER_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 const CACHE_MS = 25_000;
 const AUTH_CACHE_MS = 20_000;
@@ -340,7 +338,9 @@ function rememberCookies(next: string) {
 
 function csrfFrom(html: string): string {
   const token = html.match(/name="_csrf"\s+value="([^"]+)"/)?.[1]
-    || html.match(/name="_csrf"[^>]*value="([^"]+)"/)?.[1];
+    || html.match(/name="_csrf"[^>]*value="([^"]+)"/)?.[1]
+    || html.match(/value="([^"]+)"[^>]*name="_csrf"/)?.[1]
+    || html.match(/name='_csrf'\s+value='([^']+)'/)?.[1];
   if (!token) throw new MockApiError(502, 'UPSTREAM', '无法读取安全校验，请刷新后重试');
   return token;
 }
@@ -467,6 +467,10 @@ function isRetryableUpstream(error: unknown): boolean {
   return true;
 }
 
+function withCloudflareCookie(cookie: string | null | undefined): string {
+  return mergeCookieHeaders(cookie ?? '', cloudflareCookieHeader());
+}
+
 async function linuxRequest(path: string, init?: {
   method?: string;
   body?: URLSearchParams | FormData;
@@ -481,7 +485,28 @@ async function linuxRequest(path: string, init?: {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), init?.timeoutMs ?? 15_000);
     try {
-      return await linuxRequestOnce(path, init, controller);
+      const result = await linuxRequestOnce(path, init, controller);
+      if (!isChallengeHtml(result.html)) return result;
+
+      /*
+       * 挑战页由 Cloudflare 在到达官网业务前返回，因此携带 clearance 重发一次
+       * （包括表单 POST）不会重复执行用户操作。
+       */
+      const clearance = await passCloudflareIfNeeded(result.html, result.url);
+      if (clearance) {
+        const challengeController = new AbortController();
+        const challengeTimer = setTimeout(() => challengeController.abort(), init?.timeoutMs ?? 15_000);
+        try {
+          const retried = await linuxRequestOnce(path, {
+            ...init,
+            cookie: withCloudflareCookie(result.cookies),
+          }, challengeController);
+          if (!isChallengeHtml(retried.html)) return retried;
+        } finally {
+          clearTimeout(challengeTimer);
+        }
+      }
+      throw new MockApiError(403, 'CLOUDFLARE', '官网 Cloudflare 验证未通过，请稍后重试');
     } catch (error) {
       last = error;
       if (!isRetryableUpstream(error) && !(error instanceof Error && error.name === 'AbortError')) {
@@ -507,11 +532,11 @@ async function linuxRequestOnce(
   } | undefined,
   controller: AbortController,
 ): Promise<LinuxResult> {
-  let cookie = init?.cookie !== undefined ? init.cookie : liveCookie();
+  let cookie = withCloudflareCookie(init?.cookie !== undefined ? init.cookie : liveCookie());
   const baseHeaders: Record<string, string> = {
     Accept: init?.accept ?? 'text/html,application/xhtml+xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
     'Accept-Language': 'zh-CN,zh;q=0.9',
-    'User-Agent': BROWSER_UA,
+    'User-Agent': LINUX_BROWSER_UA,
     Referer: `${liveBase()}/`,
     Origin: liveBase(),
     ...init?.headers,
@@ -554,6 +579,7 @@ async function linuxRequestOnce(
     }
     const setCookies = setCookiesOf(response);
     const incoming = setCookies.join('; ');
+    rememberCloudflareCookies(incoming);
     const hopFlash = decodeFlashCookie(incoming);
     if (hopFlash) flash = hopFlash;
     cookie = applySetCookie(cookie ?? '', setCookies);
@@ -2063,15 +2089,12 @@ function formatCstEditAt(now = Date.now()): string {
 function parseRedPacketReview(block: string): CommentDto['redPacketReview'] {
   const stateTag = block.match(/<span\b[^>]*class="[^"]*red-packet-review-state[^"]*"[^>]*>/i)?.[0] || '';
   const label = decode(first(block, /red-packet-review-state[^>]*>([\s\S]*?)<\/span>/) || '').trim();
-  const actionHtml = block.match(/<div\b[^>]*class="[^"]*red-packet-review-actions[^"]*"[^>]*>[\s\S]*?<\/div>/i)?.[0]
-    || '';
+  const actionHtml = extractClassBlock(block, 'red-packet-review-actions') || block;
   const actions: { label: string; decision: string }[] = [];
-  const formRe = /<form\b[^>]*>[\s\S]*?<\/form>/gi;
-  let formHit: RegExpExecArray | null;
-  while ((formHit = formRe.exec(actionHtml))) {
-    if (!/red_packet_review/i.test(formHit[0])) continue;
-    const fields = parseFormFields(formHit[0]);
-    const button = stripTags(formHit[0].match(/<button\b[^>]*>([\s\S]*?)<\/button>/i)?.[1] || '').trim();
+  for (const form of formBlocks(actionHtml)) {
+    if (!/red_packet_review/i.test(form)) continue;
+    const fields = parseFormFields(form);
+    const button = stripTags(form.match(/<button\b[^>]*>([\s\S]*?)<\/button>/i)?.[1] || '').trim();
     if (!button && !fields.decision) continue;
     actions.push({
       label: button || '楼主认可',
@@ -2089,14 +2112,17 @@ function parseRedPacketReview(block: string): CommentDto['redPacketReview'] {
   return { label, state, actions };
 }
 
-function extractRedPacketReviewForm(html: string, replyId: string, decision: string): { action: string; fields: Record<string, string> } | null {
-  const formRe = /<form\b[^>]*>[\s\S]*?<\/form>/gi;
-  let hit: RegExpExecArray | null;
+/** 认可表单在对应楼层那一页，不能只抓主题第 1 页（后面页的回复会误报不能认可）。 */
+export function redPacketReviewPagePath(topicId: string, replyId: string): string {
+  return `/topic/${encodeURIComponent(topicId)}?replyid=${encodeURIComponent(replyId)}`;
+}
+
+export function extractRedPacketReviewForm(html: string, replyId: string, decision: string): { action: string; fields: Record<string, string> } | null {
   const matches: string[] = [];
-  while ((hit = formRe.exec(html))) {
-    if (!/red_packet_review/i.test(hit[0])) continue;
-    const fields = parseFormFields(hit[0]);
-    if (fields.reply_id === replyId) matches.push(hit[0]);
+  for (const form of formBlocks(html)) {
+    if (!/red_packet_review/i.test(form)) continue;
+    const fields = parseFormFields(form);
+    if (fields.reply_id === replyId) matches.push(form);
   }
   const picked = matches.find((item) => parseFormFields(item).decision === decision) || matches[0];
   if (!picked) return null;
@@ -2105,30 +2131,55 @@ function extractRedPacketReviewForm(html: string, replyId: string, decision: str
 
 async function submitRedPacketReview(topicId: string, replyId: string, decision: string) {
   requireCookie();
-  const page = await fetchHtml(`/topic/${encodeURIComponent(topicId)}`, undefined, { fresh: true });
-  if (isLoginWall(page)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
-  const form = extractRedPacketReviewForm(page, replyId, decision.trim());
-  if (!form) throw new MockApiError(400, 'UPSTREAM', '当前回复不能认可，可能已处理或不是楼主');
-  const posted = await postForm(form.action, {
-    ...form.fields,
-    _csrf: form.fields._csrf || csrfFrom(page),
-    topic_id: form.fields.topic_id || topicId,
-    reply_id: form.fields.reply_id || replyId,
-    decision: decision.trim() || form.fields.decision || 'valuable',
-  });
-  if (jsonRejected(posted.json) || posted.status >= 400) {
+  const want = decision.trim();
+  const pagePath = redPacketReviewPagePath(topicId, replyId);
+  const loadPage = () => fetchHtml(pagePath, undefined, { fresh: true });
+  const reviewMessage = (posted: LinuxResult) => String(
+    posted.json?.message
+    || posted.json?.tip
+    || postedMessage(posted)
+    || formError(posted.html, posted.flash || '认可失败'),
+  );
+  const rejected = (posted: LinuxResult) => {
+    if (posted.json && posted.json.ok === true) return false;
+    return posted.status >= 400
+      || isLoginWall(posted.html)
+      || jsonRejected(posted.json)
+      || /已过期/.test(reviewMessage(posted));
+  };
+  const postOnce = async () => {
+    const page = await loadPage();
+    if (isLoginWall(page)) throw new MockApiError(401, 'UNAUTHORIZED', '请先登录');
+    const form = extractRedPacketReviewForm(page, replyId, want);
+    const fields = form?.fields ?? {};
+    return {
+      page,
+      posted: await postForm(form?.action || '/red_packet_review', {
+        ...fields,
+        _csrf: fields._csrf || csrfFrom(page),
+        topic_id: fields.topic_id || topicId,
+        reply_id: fields.reply_id || replyId,
+        decision: want || fields.decision || 'valuable',
+      }),
+    };
+  };
+  let { page, posted } = await postOnce();
+  if (rejected(posted) && /已过期/.test(reviewMessage(posted))) {
+    ({ page, posted } = await postOnce());
+  }
+  if (rejected(posted)) {
     throw new MockApiError(
       posted.status >= 400 ? posted.status : 400,
       'UPSTREAM',
-      String(posted.json?.message || posted.json?.tip || formError(posted.html, posted.flash || '认可失败')),
+      reviewMessage(posted) || '认可失败',
     );
   }
   bustTopicCache(topicId);
   bustAccountCache();
   const fragment = commentHtmlFrom(posted.json);
   const fromFragment = fragment ? parseComments(wrapCommentHtml(fragment), topicId)[0] : null;
-  const resultPath = (typeof posted.json?.redirect === 'string' ? posted.json.redirect : posted.url)
-    .match(/\/topic\/\d+[^#]*/)?.[0] || `/topic/${encodeURIComponent(topicId)}`;
+  const redirect = typeof posted.json?.redirect === 'string' ? posted.json.redirect : '';
+  const resultPath = redirect.match(/\/topic\/\d+[^#]*/)?.[0] || pagePath;
   const resultHtml = fromFragment
     ? ''
     : (posted.url.includes('/topic/') && /id="post-/.test(posted.html)
@@ -2137,7 +2188,7 @@ async function submitRedPacketReview(topicId: string, replyId: string, decision:
   const comment = fromFragment
     || (resultHtml ? findParsedComment(resultHtml, topicId, replyId) : undefined)
     || parseComments(page, topicId).find((item) => item.id === replyId);
-  if (!comment) throw new MockApiError(400, 'UPSTREAM', postedMessage(posted) || '认可失败');
+  if (!comment) throw new MockApiError(400, 'UPSTREAM', postedMessage(posted) || '认可已提交，请下拉刷新');
   const panel = typeof posted.json?.panel_html === 'string' ? posted.json.panel_html : '';
   const card = panel
     ? parseRedPacketPanel(panel)
@@ -2758,11 +2809,11 @@ function parseReplyEditExtras(html: string): { confirm: string; quote: string; r
   return { confirm, quote, rulesUrl, deleteConfirm };
 }
 
-function parseReplyDelete(html: string, topicId: string, replyId: string): { path: string; fields: Record<string, string> } | null {
+export function parseReplyDelete(html: string, topicId: string, replyId: string): { path: string; fields: Record<string, string> } | null {
   const markers = html.match(/<[^>]*data-sb-limit-edit-time-reply-delete[^>]*>/gi) ?? [];
   const marker = markers.find((item) => (item.match(/data-content-id="([^"]+)"/i)?.[1] || '') === replyId)
     ?? (markers.length === 1 ? markers[0] : undefined);
-  const forms = html.match(/<form\b[\s\S]*?<\/form>/gi) ?? [];
+  const forms = formBlocks(html);
   let opsForm: string | undefined;
   for (const form of forms) {
     if (!/reply-delete-link|删除回帖|sb-limit-edit-time-delete|icon-delete/.test(form) || /删除主帖|删除主题/.test(form)) continue;
@@ -4580,18 +4631,36 @@ async function dispatch(req: MockRequest): Promise<unknown> {
   if (topicCommentItem && method === 'DELETE') {
     requireCookie();
     const [topicId, replyId] = topicCommentItem;
-    const editorHtml = await loadReplyEditPage(replyId);
-    let found = parseReplyDelete(editorHtml, topicId, replyId);
-    if (!found) {
-      const page = await fetchHtml(`/topic/${encodeURIComponent(topicId)}`, undefined, { fresh: true });
-      found = parseReplyDelete(page, topicId, replyId);
-    }
-    if (!found) throw new MockApiError(400, 'UPSTREAM', '当前回帖不能删除');
-    const posted = await postAjaxForm(found.path, {
-      ...found.fields,
-      _csrf: found.fields._csrf || csrfFrom(editorHtml),
-    }, `/reply_edit/${encodeURIComponent(replyId)}`);
-    if (!posted.json || jsonRejected(posted.json) || !posted.json.ok || posted.status >= 400) {
+    const deleteOnce = async () => {
+      const editorHtml = await loadReplyEditPage(replyId);
+      let found = parseReplyDelete(editorHtml, topicId, replyId);
+      let csrfHtml = editorHtml;
+      if (!found) {
+        const page = await fetchHtml(`/topic/${encodeURIComponent(topicId)}`, undefined, { fresh: true });
+        found = parseReplyDelete(page, topicId, replyId);
+        csrfHtml = page;
+      }
+      if (!found) throw new MockApiError(400, 'UPSTREAM', '当前回帖不能删除');
+      /**
+       * 跟保存回帖一样走 urlencoded。这里原先用 FormData（postAjaxForm），
+       * 经 QUIC/Cronet 时 Content-Type 容易丢成 octet-stream，官网读不到 `_csrf`
+       * 就回「请求已过期」。
+       */
+      return postForm(found.path, {
+        ...found.fields,
+        _csrf: found.fields._csrf || csrfFrom(csrfHtml),
+      });
+    };
+    const deleteRejected = (posted: LinuxResult) => (
+      posted.status >= 400
+      || !posted.json
+      || jsonRejected(posted.json)
+      || !posted.json.ok
+    );
+    let posted = await deleteOnce();
+    const deleteMessage = String(posted.json?.message || posted.json?.tip || formError(posted.html, posted.flash || '删除失败'));
+    if (deleteRejected(posted) && /已过期/.test(deleteMessage)) posted = await deleteOnce();
+    if (deleteRejected(posted)) {
       throw new MockApiError(
         posted.status >= 400 ? posted.status : 400,
         'UPSTREAM',
@@ -4599,7 +4668,7 @@ async function dispatch(req: MockRequest): Promise<unknown> {
       );
     }
     const failed = formError(posted.html, '');
-    if (failed && /失败|不能|无权|不足/.test(failed) && /delete|reply_edit|删除/.test(posted.html + posted.url + found.path)) {
+    if (failed && /失败|不能|无权|不足/.test(failed) && /delete|reply_edit|删除/.test(posted.html + posted.url)) {
       throw new MockApiError(400, 'UPSTREAM', failed);
     }
     if (isLoginWall(posted.html)) {

@@ -10,6 +10,7 @@
  * （SecureStore 是内存 Map，测试直接操纵它来模拟各种残缺状态）
  */
 import { chunkKey, countKey, pointerKey, secureGet, secureSet, splitByBytes } from '../src/services/secure-value';
+import { parseRememberedLogin } from '../src/utils/remember-login';
 
 const mem: Map<string, string> = (globalThis as unknown as { __secureStore: Map<string, string> }).__secureStore
   ?? new Map();
@@ -70,6 +71,15 @@ async function main() {
   mem.clear();
   mem.set(KEY, 'bbs_auth=single');
   check('能读单键老数据', (await secureGet(KEY)) === 'bbs_auth=single');
+
+  console.log('\n记住的账号密码');
+  check('能解析用户名和密码', parseRememberedLogin('{"username":"饼友","password":"secret"}')?.password === 'secret');
+  check('用户名会去掉首尾空格', parseRememberedLogin('{"username":"  a  ","password":"b"}')?.username === 'a');
+  check('空用户名丢掉', parseRememberedLogin('{"username":"  ","password":"x"}') === null);
+  check('坏 JSON 丢掉', parseRememberedLogin('{') === null);
+  mem.clear();
+  await secureSet('lsb.remember_login', JSON.stringify({ username: 'pie', password: 'pw' }));
+  check('账号密码能写进安全存储', parseRememberedLogin(await secureGet('lsb.remember_login'))?.password === 'pw');
 
   console.log(failed ? `\n✗ ${failed} 项未通过` : '\n✓ 通过：登录态存储回归正常');
   process.exit(failed ? 1 : 0);

@@ -11,7 +11,7 @@ import { VIDEO_LABEL, articleImageSrcs, collectImageRun, hostOf, imageKey, parse
 import { ImageGallery } from './ImageGallery';
 import { CodeBlock } from './CodeBlock';
 import { WebView } from 'react-native-webview';
-import { Icon, webImg } from './ui';
+import { Icon, SvgBlockImage, isSvgUri, webImg } from './ui';
 import { codeFontFamily, resolveCodeTheme } from '../theme/code-themes';
 
 function blockAlignStyle(align?: TextAlign) {
@@ -42,7 +42,9 @@ export function ArticleImage({
   align?: TextAlign;
 }) {
   const proxied = mediaUrl(src) ?? src;
-  const uri = useRemoteMedia(proxied);
+  // RN 的 Image 解码不了 SVG（头像已用 SvgAvatar 修过，正文这里之前漏了）：svg 走 SvgBlockImage。
+  const svgUri = isSvgUri(src) || isSvgUri(proxied) ? (proxied ?? src) : null;
+  const uri = useRemoteMedia(svgUri ? undefined : proxied);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     setFailed(false);
@@ -77,7 +79,9 @@ export function ArticleImage({
   return (
     <View style={grid ? styles.articleImageGridItem : undefined}>
       <Pressable onPress={open} style={grid ? styles.articleImageGridHit : styles.articleImageHit}>
-        {uri ? (
+        {svgUri ? (
+          <SvgBlockImage uri={svgUri} style={frame} onError={() => setFailed(true)} />
+        ) : uri ? (
           <Image source={{ uri }} style={frame} resizeMode={grid ? 'cover' : 'contain'} onError={() => setFailed(true)} />
         ) : (
           <View style={frame} />

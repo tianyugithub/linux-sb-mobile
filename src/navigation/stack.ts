@@ -43,3 +43,15 @@ export function stackMotion(prevLen: number, nextLen: number): 'push' | 'pop' | 
   if (nextLen < prevLen) return 'pop';
   return 'idle';
 }
+
+/**
+ * 进出动画交给 `react-native-screens` 的原生栈（和 React Navigation native-stack、
+ * Expo Router 同一套）。Android 用 iOS 式右进，系统合成，不在 JS 里位移整页。
+ */
+export const STACK_PUSH_ANIMATION = 'ios_from_right' as const;
+
+/**
+ * 主 Tab 切换的淡入时长（ms）。栈式页面走原生动画，只有 Tab 这一层用 JS 淡入：
+ * 无位移（位移会顶偏 WebView），淡入只做合成器透明度，不触发布局。
+ */
+export const TAB_SWITCH_FADE_MS = 180;

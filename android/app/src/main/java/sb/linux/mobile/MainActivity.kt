@@ -2,6 +2,7 @@ package sb.linux.mobile
 
 import android.os.Build
 import android.os.Bundle
+import java.lang.ref.WeakReference
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -11,12 +12,28 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  companion object {
+    @Volatile private var live: WeakReference<MainActivity>? = null
+    fun current(): MainActivity? = live?.get()
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
     // This is required for expo-splash-screen.
     setTheme(R.style.AppTheme);
     super.onCreate(null)
+    live = WeakReference(this)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    live = WeakReference(this)
+  }
+
+  override fun onDestroy() {
+    if (live?.get() === this) live = null
+    super.onDestroy()
   }
 
   /**

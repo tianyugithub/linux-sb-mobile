@@ -11,6 +11,8 @@ import { styles } from '../theme/app-styles';
 import { useNav } from '../navigation/nav';
 import { ConfirmDialog, Icon, PrimaryButton, ScreenHeader, StatusBlock, UserAvatar, type DialogState } from '../components/ui';
 import { copyText } from '../utils/share';
+import { loadRememberedLogin, saveRememberedLogin } from '../utils/remember-login';
+import { AuthPasswordField } from './AuthScreen';
 
 const SITE = 'https://linux.sb';
 
@@ -31,20 +33,31 @@ function Field({
   keyboardType?: 'default' | 'email-address' | 'numeric';
   placeholder?: string;
 }) {
+  const [visible, setVisible] = useState(false);
   return (
     <View>
       <Text style={styles.fieldLabel}>{label}{hint ? <Text style={styles.accNote}>  {hint}</Text> : null}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        secureTextEntry={secure}
-        keyboardType={keyboardType}
-        autoCapitalize="none"
-        autoCorrect={false}
-        placeholder={placeholder}
-        placeholderTextColor={C.dim}
-        style={styles.authInput}
-      />
+      {secure ? (
+        <AuthPasswordField
+          value={value}
+          onChangeText={onChange}
+          placeholder={placeholder || ''}
+          visible={visible}
+          onToggle={() => setVisible((on) => !on)}
+          autoComplete={label.includes('新') ? 'new-password' : 'password'}
+        />
+      ) : (
+        <TextInput
+          value={value}
+          onChangeText={onChange}
+          keyboardType={keyboardType}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={placeholder}
+          placeholderTextColor={C.dim}
+          style={styles.authInput}
+        />
+      )}
     </View>
   );
 }
@@ -265,7 +278,14 @@ export function AccountScreen() {
                     onPress={() => setDialog({
                       title: '确认操作',
                       text: `修改用户名将扣除 ${data.usernameCost} 积分，确认继续吗？`,
-                      onConfirm: async () => { await run('username', () => api.saveProfileUsername({ new_username: username.trim(), current_password: usernamePassword })); },
+                      onConfirm: async () => {
+                        await run('username', async () => {
+                          const result = await api.saveProfileUsername({ new_username: username.trim(), current_password: usernamePassword });
+                          const saved = await loadRememberedLogin();
+                          if (saved) await saveRememberedLogin({ username: username.trim(), password: saved.password });
+                          return result;
+                        });
+                      },
                     })}
                   />
                 </View>
@@ -398,7 +418,12 @@ export function AccountScreen() {
                     block
                     disabled={!currentPassword || !password || !password2 || busy === 'password'}
                     label={busy === 'password' ? '保存中' : '保存密码'}
-                    onPress={() => { void run('password', () => api.saveProfilePassword({ current_password: currentPassword, password, password2 })); }}
+                    onPress={() => { void run('password', async () => {
+                      const result = await api.saveProfilePassword({ current_password: currentPassword, password, password2 });
+                      const saved = await loadRememberedLogin();
+                      if (saved) await saveRememberedLogin({ username: saved.username, password });
+                      return result;
+                    }); }}
                   />
                 </View>
               ) : null}

@@ -13,12 +13,14 @@ import {
   View,
   type PanResponderGestureState,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SvgAst, fetchText, parse } from 'react-native-svg';
 import type { IonName, Topic } from '../../data';
 import type { CommentDto } from '../types/api';
 import { C } from '../theme/palette';
 import { styles } from '../theme/app-styles';
+import { sanitizeSvgAst, sanitizeSvgXml, svgXmlToWebPage } from '../utils/svg-sanitize';
 import { mediaUrl } from '../services/client';
 import { useRemoteMedia } from '../hooks/useRemoteMedia';
 import { decodeEntities, firstGlyph } from '../utils/entities';
@@ -105,6 +107,15 @@ export function pickUserId(...values: Array<string | number | null | undefined>)
   return keys.find((value) => /^\d+$/.test(value)) || keys[0] || '';
 }
 
+/** 正文图 / 头像共用的 SVG 判定：RN 的 Image 解码不了 SVG，后缀与 data URI 都算。 */
+export function isSvgUri(src?: string | null): boolean {
+  if (!src) return false;
+  const text = String(src).trim();
+  if (!text) return false;
+  if (/^data:image\/svg/i.test(text)) return true;
+  return /\.svg(\?|#|$)/i.test(text);
+}
+
 // 站内默认头像是 SVG，RN 的 Image 解码不了。react-native-svg 的 SvgUri 每次挂载都会
 // 重新 fetch + 在 JS 线程解析 XML，列表滚动和弹幕重挂载时代价很大（实测 JS 线程占
 // 滚动 CPU 的 ~58%）。这里把解析结果 AST 按 URL 缓存在模块级，命中后同步渲染、零解析。
@@ -122,6 +133,59 @@ function rememberAst(uri: string, ast: SvgNode) {
   }
 }
 
+const svgHtmlCache = new Map<string, string>();
+const svgHtmlInflight = new Map<string, Promise<string>>();
+
+function svgBaseUrl(uri: string): string {
+  try {
+    if (/^https?:\/\//i.test(uri)) return new URL(uri).origin + '/';
+  } catch {
+    /* ignore */
+  }
+  return 'https://linux.sb/';
+}
+
+function xmlFromSvgUri(uri: string): Promise<string> {
+  const data = uri.match(/^data:image\/svg\+xml([^,]*),(.*)$/i);
+  if (data) {
+    try {
+      const xml = /;base64/i.test(data[1])
+        ? globalThis.atob(data[2])
+        : decodeURIComponent(data[2]);
+      return Promise.resolve(xml);
+    } catch {
+      return Promise.reject(new Error('bad data svg'));
+    }
+  }
+  return fetchText(uri).then((xml) => {
+    if (!xml) throw new Error('empty svg');
+    return xml;
+  });
+}
+
+function loadSvgPage(uri: string): Promise<string> {
+  const cached = svgHtmlCache.get(uri);
+  if (cached) return Promise.resolve(cached);
+  const pending = svgHtmlInflight.get(uri);
+  if (pending) return pending;
+  const task = xmlFromSvgUri(uri)
+    .then((xml) => {
+      if (!xml) throw new Error('empty svg');
+      const page = svgXmlToWebPage(xml);
+      svgHtmlCache.set(uri, page);
+      if (svgHtmlCache.size > SVG_AST_CACHE_MAX) {
+        const oldest = svgHtmlCache.keys().next().value;
+        if (oldest !== undefined) svgHtmlCache.delete(oldest);
+      }
+      return page;
+    })
+    .finally(() => {
+      svgHtmlInflight.delete(uri);
+    });
+  svgHtmlInflight.set(uri, task);
+  return task;
+}
+
 function loadSvgAst(uri: string): Promise<SvgNode> {
   const cached = svgAstCache.get(uri);
   if (cached) return Promise.resolve(cached);
@@ -130,7 +194,10 @@ function loadSvgAst(uri: string): Promise<SvgNode> {
   const task = fetchText(uri)
     .then((xml) => {
       if (!xml) throw new Error('empty svg');
-      const ast = parse(xml);
+      // parse() 会立刻把子节点收成 React 元素；嵌套 <g><path d="…NaN"> 必须在
+      // 进 parse 之前洗 XML 属性，并用 middleware 在 XmlAST 上再洗一遍。
+      const ast = parse(sanitizeSvgXml(xml), (root) => sanitizeSvgAst(root));
+      if (!ast) throw new Error('empty svg ast');
       rememberAst(uri, ast);
       return ast;
     })
@@ -172,6 +239,71 @@ export function SvgAvatar({ uri, size, onError }: { uri: string; size: number; o
   return <SvgAst ast={ast as unknown as SvgAstProp} override={{ width: size, height: size }} />;
 }
 
+/**
+ * 正文 / 大图用 WebView 内联 SVG：浏览器会播 SMIL / CSS 动画，也不会走
+ * react-native-svg 的原生 Path（动画 SVG 在 setD 里会闪退，播不了动画）。
+ * 头像仍用 SvgAst（静态小图，列表里不能每个都挂 WebView）。
+ */
+export function SvgBlockImage({
+  uri,
+  style,
+  onError,
+  onLoad,
+}: {
+  uri: string;
+  style?: object;
+  onError?: () => void;
+  onLoad?: () => void;
+}) {
+  const [page, setPage] = useState<string | null>(() => svgHtmlCache.get(uri) ?? null);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const onLoadRef = useRef(onLoad);
+  onLoadRef.current = onLoad;
+  useEffect(() => {
+    const cached = svgHtmlCache.get(uri);
+    if (cached) {
+      setPage(cached);
+      onLoadRef.current?.();
+      return;
+    }
+    setPage(null);
+    let alive = true;
+    loadSvgPage(uri)
+      .then((next) => {
+        if (!alive) return;
+        setPage(next);
+        onLoadRef.current?.();
+      })
+      .catch(() => {
+        if (alive) onErrorRef.current?.();
+      });
+    return () => {
+      alive = false;
+    };
+  }, [uri]);
+  if (!page) return <View style={style} />;
+  return (
+    <View style={style} pointerEvents="none">
+      <WebView
+        source={{ html: page, baseUrl: svgBaseUrl(uri) }}
+        style={{ flex: 1, backgroundColor: 'transparent' }}
+        originWhitelist={['*']}
+        javaScriptEnabled={false}
+        domStorageEnabled={false}
+        scrollEnabled={false}
+        overScrollMode="never"
+        showsHorizontalScrollIndicator={false}
+        showsVerticalScrollIndicator={false}
+        setBuiltInZoomControls={false}
+        androidLayerType="hardware"
+        onHttpError={() => onErrorRef.current?.()}
+        onError={() => onErrorRef.current?.()}
+      />
+    </View>
+  );
+}
+
 export function UserAvatar({
   name,
   url,
@@ -193,7 +325,7 @@ export function UserAvatar({
   const [failed, setFailed] = useState(false);
   const src = mediaUrl(url);
   // 站内默认头像是 SVG，RN 的 Image 解码不了，必须用 react-native-svg 渲染。
-  const isSvg = Boolean(src) && /\.svg(\?|$)/i.test(src as string);
+  const isSvg = isSvgUri(src);
   const resolved = useRemoteMedia(isSvg ? undefined : src);
   useEffect(() => {
     setFailed(false);
